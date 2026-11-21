@@ -1,0 +1,152 @@
+<!-- DO NOT EDIT doc/bemtvi-md-table.txt BY HAND. It is generated from this file by
+panvimdoc — run `scripts/gen-vimdoc.sh` after editing. -->
+
+Lines up the columns of markdown pipe tables on screen without changing the text. Built entirely on
+the native `btv.*` plugin API.
+
+A table typed without padding:
+
+```markdown
+| Queue | Upstream | Applied by |
+|---|---|---|
+| ingest | kafka://events | worker-a |
+```
+
+is drawn as:
+
+```markdown
+| Queue  | Upstream       | Applied by |
+|--------|----------------|------------|
+| ingest | kafka://events | worker-a   |
+```
+
+The extra spaces and dashes are inline virtual text. The buffer holds exactly what you typed, so
+writing the file leaves it unchanged, and motions move over the real characters only.
+
+<!-- Passed through verbatim so `:help bemtvi-md-table` lands on this page
+     (panvimdoc derives per-section tags but no bare project tag). -->
+```vimdoc
+                                                              *bemtvi-md-table*
+```
+
+# Install
+
+Put the repo on your `runtimepath` with `btv.plugins` or any plugin manager.
+`plugin/bemtvi-md-table.lua` auto-sources on load and turns alignment on with the defaults, so
+there is nothing to configure:
+
+```lua
+btv.plugins({
+  { "bemtvi/bemtvi-md-table" },
+})
+```
+
+Run `:PluginSync` to clone it, then open a markdown file.
+
+# What it aligns
+
+A GFM pipe table: a header row, a delimiter row with the same number of cells, then body rows up
+to the first blank line or line without a `|`. Each column is widened to its widest cell, measured
+in display cells, so CJK text and emoji line up. A shorter cell gets the difference as padding:
+
+- spaces before its closing `|`, in a left-aligned (or unmarked) column;
+- spaces before its text in a right-aligned column (`---:`), split on both sides in a centered
+  one (`:---:`);
+- on the delimiter row, dashes after the cell's last `-`, so alignment colons stay at the edges.
+
+Rows with and without outer pipes line up with each other, since column 1 is measured from the
+start of the line. A `\|` is a literal pipe, not a cell boundary.
+
+Left alone:
+
+- tables inside a fenced code block (`` ``` `` or `~~~`);
+- tables indented four or more spaces (an indented code block);
+- lines that hold a `|` but are not part of a table (no delimiter row under a header).
+
+The last cell of a row with no trailing pipe counts toward its column's width but is not padded,
+because nothing after it needs lining up.
+
+# Toggles
+
+```lua
+btv.g.md_table_align = false          -- off everywhere (default: on)
+btv.b.md_table_align = false          -- off in the current buffer
+btv.b[bufnr].md_table_align = false   -- ...or a specific buffer
+```
+
+A buffer's explicit value wins over the global one. Both are read on every repaint; after
+changing one from Lua, call `require("bemtvi-md-table").refresh()` to repaint straight away.
+
+## :MdTableToggle
+
+`:MdTableToggle` flips alignment for the current buffer and repaints it.
+
+# Configuration
+
+`require("bemtvi-md-table").setup(opts)` reconfigures. `plugin/bemtvi-md-table.lua` calls it with
+`{}` for you; calling it again from a config re-applies. Unknown keys are an error.
+
+```lua
+require("bemtvi-md-table").setup({
+  filetypes = { "markdown" },  -- the filetypes whose tables are aligned
+  align = true,                -- honor ---: and :---: in the cells; false pads
+                               -- every cell on the right
+})
+```
+
+# Highlights
+
+- `MdTableDelimiter` — the dashes added to the delimiter row. Linked by default to
+  `@punctuation.special`, the capture the delimiter row itself is painted with.
+- `MdTablePad` — the spaces added to the cells. Linked by default to `Normal`.
+
+Both are `default` links, so a colorscheme or your config can restyle them. They are re-linked
+after a colorscheme loads.
+
+# API
+
+## setup
+
+`require("bemtvi-md-table").setup(opts)`
+
+See [Configuration](#configuration).
+
+## enabled
+
+`require("bemtvi-md-table").enabled(bufnr)`
+
+Whether tables are aligned in `bufnr` (`0` = the current buffer), from the toggles above.
+
+## toggle
+
+`require("bemtvi-md-table").toggle(bufnr)`
+
+Flip alignment for `bufnr` (default: the current buffer), repaint it, and return the new state.
+
+## refresh
+
+`require("bemtvi-md-table").refresh(bufnr)`
+
+Repaint `bufnr`'s windows now, or every visible window with no argument.
+
+# How it works
+
+A `btv.decor.provider` scoped to the configured filetypes runs whenever a window's viewport
+changes: on scroll, resize, or an edit. For each table that touches the viewport it reads the whole
+table, even the rows above or below the screen, so the columns agree past the edge. It then
+publishes one inline `virt_text` mark per padded cell. Each publish replaces the previous one, so
+nothing is left behind when a cell shrinks.
+
+The work is bounded by what is visible. Only tables on screen are measured, and each table's layout
+is cached until the buffer next changes (keyed on `btv.buf.changedtick`). The one pass over the
+whole buffer is the fenced-code-block scan. It runs at most once per change, and only when a table
+is on screen.
+
+# Tests
+
+```sh
+bemtvi --test-plugin .
+```
+
+The suite runs in a real headless editor. It opens markdown files and checks the painted rows, with
+the inline padding put back in, and also drives the runnable example in `examples/`.
