@@ -1,6 +1,7 @@
 -- bemtvi-md-table.layout — the pure half of the plugin: parse GFM pipe-table rows and
 -- work out the padding that lines a table's columns up. No editor state, no I/O; the
--- provider in `init.lua` feeds it buffer lines and turns its result into marks.
+-- provider in `init.lua` finds each table with the treesitter grammar, feeds its lines
+-- here and turns the result into marks.
 --
 -- Columns throughout are BYTE offsets into the line (what an extmark anchors on);
 -- widths are DISPLAY cells (`btv.str.displaywidth`), so wide characters line up.
@@ -98,30 +99,6 @@ function M.aligns(row, line)
     out[i] = (l and r) and "center" or (r and "right" or "left")
   end
   return out
-end
-
--- Whether `line` could be part of a table at all — the cheap pre-filter the provider
--- runs on every visible line before parsing anything.
-function M.is_row(line)
-  return line:find("|", 1, true) ~= nil and M.row(line) ~= nil
-end
-
--- `M.table_at(lines)` -> nil | first. Given a run of consecutive row lines (every one
--- `M.is_row`), the index of the table's header row inside it, or `nil` when the run
--- holds no table. A table is a header row followed by a delimiter row with the same
--- number of cells, both indented at most three spaces (four is an indented code block);
--- lines in the run above the header are paragraph text that happens to hold a pipe.
-function M.table_at(lines)
-  for i = 2, #lines do
-    local delim = M.row(lines[i])
-    if delim and delim.indent <= 3 and M.aligns(delim, lines[i]) then
-      local header = M.row(lines[i - 1])
-      if header and header.indent <= 3 and #header.cells == #delim.cells then
-        return i - 1
-      end
-    end
-  end
-  return nil
 end
 
 -- `M.layout(lines[, opts])` -> pads. `lines` is one whole table: the header row, the

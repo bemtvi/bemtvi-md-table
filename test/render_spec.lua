@@ -6,9 +6,22 @@
 local md = require("bemtvi-md-table")
 local expect = btv.test.expect
 
--- Write `lines` to a fresh `name` (default `t.md`) and open it.
+-- Tables are found by the markdown treesitter grammar, so a test that expects any to
+-- be drawn skips (with the reason) on a machine without it.
+local function needs_markdown(t)
+  if not btv.tbl.contains(btv.await(btv.treesitter.installed()), "markdown") then
+    t:skip("no markdown treesitter grammar installed")
+  end
+end
+
+-- Write `lines` to a fresh `name` (default `t.md`) and open it. A markdown file needs
+-- the grammar (see `needs_markdown`).
 local function open(t, lines, name)
-  local path = btv.test.tempdir() .. "/" .. (name or "t.md")
+  name = name or "t.md"
+  if name:match("%.md$") then
+    needs_markdown(t)
+  end
+  local path = btv.test.tempdir() .. "/" .. name
   btv.await(btv.fs.write(path, table.concat(lines, "\n") .. "\n"))
   t:cmd("edit " .. path)
   return path
@@ -179,6 +192,32 @@ btv.test.describe("bemtvi-md-table", function()
     for row = 1, 4 do
       expect(#inline(row)).to_be(0)
     end
+  end)
+
+  btv.test.it("finds tables in a list item and a block quote", function(t)
+    open(t, {
+      "- item",
+      "",
+      "  | a | bbbbbb |",
+      "  |---|---|",
+      "",
+      "> | c | dddddd |",
+      "> |---|---|",
+    })
+    wait_aligned(t, 3, 4)
+    wait_aligned(t, 6, 7)
+    expect(painted(t, 4)).to_be("  |---|--------|")
+    expect(painted(t, 7)).to_be("> |---|--------|")
+  end)
+
+  btv.test.it("draws nothing where treesitter is off", function(t)
+    open(t, USER_TABLE)
+    wait_aligned(t, 3, 5)
+    expect(#inline(4)).never.to_be(0)
+    t:cmd("lua btv.bo.ts_highlight = false")
+    t:wait_for(function()
+      return (#inline(4) == 0) or nil
+    end, { message = "the padding stayed with no parse tree to find tables in" })
   end)
 
   btv.test.it("does nothing outside markdown", function(t)

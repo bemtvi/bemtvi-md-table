@@ -37,7 +37,12 @@ local function find(t, text)
   error("no line " .. text)
 end
 
+-- The tables are found by the markdown treesitter grammar; without it every note here
+-- skips, with the reason.
 local function open(t)
+  if not btv.tbl.contains(btv.await(btv.treesitter.installed()), "markdown") then
+    t:skip("no markdown treesitter grammar installed")
+  end
   md.setup({})
   t:cmd("edit " .. SAMPLE)
   t:cmd("edit!")

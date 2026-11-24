@@ -68,20 +68,6 @@ btv.test.describe("layout.aligns", function()
   end)
 end)
 
-btv.test.describe("layout.table_at", function()
-  btv.test.it("finds the header above the delimiter row", function()
-    expect(layout.table_at({ "x | y", "| a | b |", "|---|---|", "| 1 | 2 |" })).to_be(2)
-  end)
-
-  btv.test.it("needs the header and delimiter cell counts to match", function()
-    expect(layout.table_at({ "| a | b |", "|---|" })).to_be_nil()
-  end)
-
-  btv.test.it("ignores a table indented four spaces (a code block)", function()
-    expect(layout.table_at({ "    | a |", "    |---|" })).to_be_nil()
-  end)
-end)
-
 btv.test.describe("layout.layout", function()
   btv.test.it("widens the delimiter row to the header", function()
     expect(painted({ "| Queue | Upstream | Applied by |", "|---|---|---|" })).to_equal({

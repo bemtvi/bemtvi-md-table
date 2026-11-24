@@ -23,10 +23,13 @@ The padding is inline virtual text. The buffer still holds exactly what you type
 it unchanged. Columns re-align as you type, respect `---:` / `:---:` alignment, measure wide
 characters by display width, and are left alone inside code fences.
 
+Tables are found by the markdown treesitter grammar, so they are aligned only where it is
+installed: run `:TSInstall markdown` once.
+
 ## Install
 
-Declare it with the built-in `:Plugins` manager and run `:PluginSync`. There is nothing to
-configure:
+Declare it with the built-in `:Plugins` manager and run `:PluginSync`, and install the markdown
+grammar with `:TSInstall markdown` if you haven't. There is nothing to configure:
 
 ```lua
 btv.plugins({
@@ -56,6 +59,8 @@ Run the suite (a real editor, headless):
 ```sh
 bemtvi --test-plugin .
 ```
+
+The tests that draw tables need the markdown grammar and are reported as skipped without it.
 
 The help file is generated: edit `doc/bemtvi-md-table.md`, never the `.txt`, then run
 `bash scripts/gen-vimdoc.sh`. Enable the hooks once after cloning:

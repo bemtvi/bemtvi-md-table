@@ -15,12 +15,16 @@
 -- reads as an aligned grid while the buffer still holds exactly what you typed. Save
 -- it and the file is unchanged; the padding exists only on screen.
 --
+-- Where the tables are comes from the markdown treesitter grammar: the provider asks
+-- for `(pipe_table) @table` over the visible rows, and a table crossing the edge of the
+-- screen comes back whole, so its columns agree past it. The grammar already knows a
+-- table inside a code fence or an indented code block is not one, and finds the ones
+-- in list items and block quotes. Without a markdown grammar nothing is drawn
+-- (`:TSInstall markdown`).
+--
 -- The work is bounded by what is visible: only tables that touch the viewport are
--- measured (a table is read in full, so its columns agree past the edge of the
--- screen), and the per-table layout is cached until the buffer next changes. The one
--- whole-buffer pass is the fenced-code-block scan that keeps a table inside a code
--- fence from being padded, and it runs at most once per change, only when a table is
--- on screen.
+-- measured (a table is read in full), and each table's layout is cached until the
+-- buffer next changes.
 --
 -- Toggles (read on every run; `:MdTableToggle` flips the buffer one and repaints):
 --   * `btv.g.md_table_align = false` turns it off globally (default: on).
@@ -37,9 +41,12 @@ local DEFAULTS = { filetypes = { "markdown" }, align = true }
 -- The live configuration (`setup` replaces it).
 M.config = { filetypes = DEFAULTS.filetypes, align = DEFAULTS.align }
 
--- Per-buffer analysis, valid for one `changedtick`:
---   `{ tick, tables = { [run_start] = { first, last, pads } | false }, fences }`
+-- Per-buffer layouts, valid for one `changedtick`:
+--   `{ tick, tables = { [first_row] = { first, last, pads } } }`
 M._cache = {}
+
+-- The query the provider asks the parse tree.
+local QUERY = "(pipe_table) @table"
 
 -- ----- toggles ----------------------------------------------------------------
 
@@ -76,30 +83,6 @@ end
 
 -- ----- analysis ---------------------------------------------------------------
 
--- The rows (0-based) that sit inside a fenced code block, as a set — so a table
--- written inside ``` is left as text. An unclosed fence runs to the end of the buffer.
-local function fenced_rows(buf)
-  local set, open_char, open_len = {}, nil, 0
-  for i, line in ipairs(btv.buf.lines(buf, 0, -1)) do
-    local fence = line:match("^ ? ? ?(```+)") or line:match("^ ? ? ?(~~~+)")
-    if open_char then
-      set[i - 1] = true
-      if
-        fence
-        and fence:sub(1, 1) == open_char
-        and #fence >= open_len
-        and not line:match("^%s*[`~]+(.*)$"):find("%S")
-      then
-        open_char = nil
-      end
-    elseif fence then
-      open_char, open_len = fence:sub(1, 1), #fence
-      set[i - 1] = true
-    end
-  end
-  return set
-end
-
 -- The cache entry for `buf`, reset when the buffer has changed since it was built.
 local function cache_for(buf)
   local tick = btv.buf.changedtick(buf)
@@ -111,78 +94,44 @@ local function cache_for(buf)
   return c
 end
 
--- Lay out the table (if any) in the run of row lines `[first, last]` (0-based), whose
--- text is `lines`. Returns `{ first, last, pads }` with absolute rows, or `false`.
-local function analyze_run(c, buf, first, lines)
-  local at = layout.table_at(lines)
-  if not at then
-    return false
+-- The rows (0-based, inclusive) a captured node covers. A node ending at column 0
+-- stops before that row: it ends with the previous line's newline.
+local function node_rows(node)
+  local last = node[3]
+  if node[4] == 0 and last > node[1] then
+    last = last - 1
   end
-  c.fences = c.fences or fenced_rows(buf)
-  if c.fences[first] then
-    return false
-  end
-  local rows = {}
-  for i = at, #lines do
-    rows[#rows + 1] = lines[i]
-  end
-  return {
-    first = first + at - 1,
-    last = first + #lines - 1,
-    pads = layout.layout(rows, { align = M.config.align }),
-  }
+  return node[1], last
 end
 
--- The marks that align every table touching rows `[top, bot]` of `buf`; `visible` is
--- `ctx.lines`, the snapshot of exactly that slice.
-function M.marks(buf, top, bot, visible)
+-- `M.marks(buf, top, bot, matches)` -> the marks that align every table touching rows
+-- `[top, bot]` of `buf`. `matches` is `ctx.query.matches` for `(pipe_table) @table`:
+-- each table node with its full extent, even where it runs past the viewport.
+function M.marks(buf, top, bot, matches)
   local c = cache_for(buf)
-  local n = btv.buf.line_count(buf)
-  local function get(row)
-    if row >= top and row <= bot then
-      return visible[row - top + 1]
-    end
-    return btv.buf.lines(buf, row, row + 1)[1]
-  end
-
   local marks = {}
-  local r = top
-  while r <= bot do
-    local line = visible[r - top + 1]
-    if line and layout.is_row(line) then
-      -- The whole run of row lines around `r`, reaching past the viewport so a table
-      -- cut by the screen edge is still measured in full.
-      local first, last = r, r
-      while first > 0 and layout.is_row(get(first - 1)) do
-        first = first - 1
-      end
-      while last + 1 < n and layout.is_row(get(last + 1)) do
-        last = last + 1
-      end
+  for _, m in ipairs(matches) do
+    for _, node in ipairs(m.captures.table or {}) do
+      local first, last = node_rows(node)
       local tbl = c.tables[first]
-      if tbl == nil then
-        local lines = {}
-        for row = first, last do
-          lines[#lines + 1] = get(row)
-        end
-        tbl = analyze_run(c, buf, first, lines)
+      if not tbl or tbl.last ~= last then
+        tbl = {
+          first = first,
+          last = last,
+          pads = layout.layout(btv.buf.lines(buf, first, last + 1), { align = M.config.align }),
+        }
         c.tables[first] = tbl
       end
-      if tbl then
-        for row = math.max(top, tbl.first), math.min(bot, tbl.last) do
-          for _, pad in ipairs(tbl.pads[row - tbl.first + 1]) do
-            marks[#marks + 1] = {
-              row,
-              pad.col,
-              virt_text = { { pad.text, pad.delimiter and "MdTableDelimiter" or "MdTablePad" } },
-              virt_text_pos = "inline",
-            }
-          end
+      for row = math.max(top, first), math.min(bot, last) do
+        for _, pad in ipairs(tbl.pads[row - first + 1]) do
+          marks[#marks + 1] = {
+            row,
+            pad.col,
+            virt_text = { { pad.text, pad.delimiter and "MdTableDelimiter" or "MdTablePad" } },
+            virt_text_pos = "inline",
+          }
         end
       end
-      r = last + 1
-    else
-      r = r + 1
     end
   end
   return marks
@@ -232,12 +181,21 @@ function M.setup(opts)
   btv.decor.provider({
     name = PROVIDER,
     bufs = { filetype = fts },
+    query = QUERY,
     on_range = function(ctx, publish)
       if not M.enabled(ctx.buf) then
         publish({})
         return
       end
-      publish(M.marks(ctx.buf, ctx.top, ctx.bot, ctx.lines))
+      local q = ctx.query
+      if q.pending then
+        return -- the grammar is loading or a big file's parse is unfinished: keep what's drawn
+      end
+      if not q.matches then
+        publish({}) -- no markdown grammar, or treesitter is off here: no tables to align
+        return
+      end
+      publish(M.marks(ctx.buf, ctx.top, ctx.bot, q.matches))
     end,
   })
 

@@ -43,10 +43,14 @@ btv.plugins({
 
 Run `:PluginSync` to clone it, then open a markdown file.
 
+Tables are found by the markdown treesitter grammar. Without it nothing is aligned: install it once
+with `:TSInstall markdown`.
+
 # What it aligns
 
-A GFM pipe table: a header row, a delimiter row with the same number of cells, then body rows up
-to the first blank line or line without a `|`. Each column is widened to its widest cell, measured
+A GFM pipe table, as the markdown treesitter grammar finds it: a header row, a delimiter row with
+the same number of cells, then body rows, at the top level or inside a list item or block quote.
+Each column is widened to its widest cell, measured
 in display cells, so CJK text and emoji line up. A shorter cell gets the difference as padding:
 
 - spaces before its closing `|`, in a left-aligned (or unmarked) column;
@@ -57,11 +61,13 @@ in display cells, so CJK text and emoji line up. A shorter cell gets the differe
 Rows with and without outer pipes line up with each other, since column 1 is measured from the
 start of the line. A `\|` is a literal pipe, not a cell boundary.
 
-Left alone:
+Left alone, because the grammar doesn't call them tables:
 
 - tables inside a fenced code block (`` ``` `` or `~~~`);
 - tables indented four or more spaces (an indented code block);
 - lines that hold a `|` but are not part of a table (no delimiter row under a header).
+
+Buffers where treesitter is off (`btv.bo.ts_highlight = false`) get no alignment either.
 
 The last cell of a row with no trailing pipe counts toward its column's width but is not padded,
 because nothing after it needs lining up.
@@ -132,15 +138,15 @@ Repaint `bufnr`'s windows now, or every visible window with no argument.
 # How it works
 
 A `btv.decor.provider` scoped to the configured filetypes runs whenever a window's viewport
-changes: on scroll, resize, or an edit. For each table that touches the viewport it reads the whole
-table, even the rows above or below the screen, so the columns agree past the edge. It then
+changes: on scroll, resize, or an edit. It declares the treesitter query `(pipe_table) @table`, so
+each run is handed the tables that touch the viewport, each with its full extent even where it runs
+above or below the screen. It reads each table's rows, so the columns agree past the edge, and
 publishes one inline `virt_text` mark per padded cell. Each publish replaces the previous one, so
-nothing is left behind when a cell shrinks.
+nothing is left behind when a cell shrinks. While the grammar is still loading, or a large file's
+first parse is unfinished, it keeps what is drawn and runs again when the tree is ready.
 
 The work is bounded by what is visible. Only tables on screen are measured, and each table's layout
-is cached until the buffer next changes (keyed on `btv.buf.changedtick`). The one pass over the
-whole buffer is the fenced-code-block scan. It runs at most once per change, and only when a table
-is on screen.
+is cached until the buffer next changes (keyed on `btv.buf.changedtick`).
 
 # Tests
 
@@ -149,4 +155,5 @@ bemtvi --test-plugin .
 ```
 
 The suite runs in a real headless editor. It opens markdown files and checks the painted rows, with
-the inline padding put back in, and also drives the runnable example in `examples/`.
+the inline padding put back in, and also drives the runnable example in `examples/`. The tests that
+draw tables need the markdown grammar and are reported as skipped without it.

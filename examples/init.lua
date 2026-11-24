@@ -3,6 +3,9 @@
 --   BEMTVI_CONFIG=examples bemtvi examples/sample.md
 --
 -- Each section has a *type-this / see-that* note.
+--
+-- Tables are found by the markdown treesitter grammar. Without it nothing is aligned:
+-- run `:TSInstall markdown` once first.
 
 -- Load the plugin straight from this repo (a local-dev spec: `dir` is never cloned, and
 -- adding it to the runtimepath auto-sources `plugin/`, which calls `setup({})`). A real
