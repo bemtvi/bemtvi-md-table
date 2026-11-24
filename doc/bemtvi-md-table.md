@@ -16,15 +16,15 @@ is drawn as:
 
 ```markdown
 | Queue ·| Upstream ······| Applied by |
-|---─────|---─────────────|---─────────|
+|--------|----------------|------------|
 | ingest | kafka://events | worker-a ··|
 ```
 
-The padding is inline virtual text, drawn dimmed: the added spaces as `·` and the added dashes as
-`─`, so it can't be mistaken for text you typed. The buffer holds exactly what you typed, so
-writing the file leaves it unchanged, and motions move over the real characters only. Both the
-glyphs (see [Configuration](#configuration)) and the colours (see [Highlights](#highlights)) can
-be changed.
+The padding is inline virtual text, drawn dimmed so it can't be mistaken for text you typed: the
+added spaces as `·`, the added dashes as `-` like the separator itself. The buffer holds exactly
+what you typed, so writing the file leaves it unchanged, and motions move over the real characters
+only. Both the glyphs (see [Fill chars](#fill-chars)) and the colours (see
+[Highlights](#highlights)) can be changed.
 
 <!-- Passed through verbatim so `:help bemtvi-md-table` lands on this page
      (panvimdoc derives per-section tags but no bare project tag). -->
@@ -100,15 +100,39 @@ require("bemtvi-md-table").setup({
   filetypes = { "markdown" },  -- the filetypes whose tables are aligned
   align = true,                -- honor ---: and :---: in the cells; false pads
                                -- every cell on the right
-  chars = {                    -- the glyphs the padding is drawn in
-    pad = "·",                 -- in place of the added spaces
-    delimiter = "─",           -- in place of the added dashes
-  },
+  fillchars = "pad:·,delimiter:-",  -- the glyphs the padding is drawn in
 })
 ```
 
-Each glyph must be one display cell wide, and either key can be left out to keep its default.
-`chars = { pad = " ", delimiter = "-" }` draws the padding as plain spaces and dashes.
+# Fill chars
+
+The glyphs the padding is drawn in, set like the core's `'fillchars'` and `'listchars'`: a
+comma-separated `key:char` list.
+
+```lua
+require("bemtvi-md-table").setup({ fillchars = "pad:·,delimiter:-" })
+```
+
+- `pad` — drawn in place of the spaces added to the cells. Default `·`.
+- `delimiter` — drawn in place of the dashes added to the delimiter row. Default `-`.
+
+The char is the one character after the colon, so `,` and `:` work as fill chars too
+(`"pad:,"`). Each must be one display cell wide. A key left out keeps its default, so
+`"pad: "` changes only the spaces. The table form `btv.opt` gives map options works too:
+`{ pad = " " }`. `"pad: "` draws the padding as plain spaces, its colour aside.
+
+Like a global-local option, it can be set at three levels, the most specific winning:
+
+```lua
+require("bemtvi-md-table").setup({ fillchars = "pad: " })  -- the base
+btv.g.md_table_fillchars = "pad:."                          -- overrides setup
+btv.b[bufnr].md_table_fillchars = { pad = "+" }             -- one buffer
+```
+
+The variables are read on every repaint; after changing one from Lua, call
+`require("bemtvi-md-table").refresh()` to repaint straight away. An invalid value is an error:
+`setup` raises it, and a variable is reported once on the message line as `E474`, with that
+buffer's tables left unaligned until it is fixed.
 
 # Highlights
 
@@ -146,6 +170,14 @@ Flip alignment for `bufnr` (default: the current buffer), repaint it, and return
 `require("bemtvi-md-table").refresh(bufnr)`
 
 Repaint `bufnr`'s windows now, or every visible window with no argument.
+
+## fillchars
+
+`require("bemtvi-md-table").fillchars(bufnr)`
+
+The fill chars in effect for `bufnr` (`0` = the current buffer), as `{ pad = ..., delimiter = ... }`:
+the buffer's variable, else the global one, else setup's. An invalid variable returns `nil` and
+the `E474` message. See [Fill chars](#fill-chars).
 
 # How it works
 

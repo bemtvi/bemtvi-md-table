@@ -15,13 +15,14 @@ and it is drawn as a grid:
 
 ```markdown
 | Queue ·| Upstream ······| Applied by |
-|---─────|---─────────────|---─────────|
+|--------|----------------|------------|
 | ingest | kafka://events | worker-a ··|
 ```
 
-The padding is inline virtual text, drawn dimmed, as `·` for the added spaces and `─` for the added
-dashes, so you can tell it from what you typed. The buffer still holds exactly what you typed, so `:w` writes
-it unchanged. Columns re-align as you type, respect `---:` / `:---:` alignment, measure wide
+The padding is inline virtual text, drawn dimmed so you can tell it from what you typed: the added
+spaces as `·`, the added dashes as `-` like the separator itself. The glyphs are fill chars, set
+like `'fillchars'`: `setup({ fillchars = "pad: " })` draws the spaces as plain spaces. The buffer
+still holds exactly what you typed, so `:w` writes it unchanged. Columns re-align as you type, respect `---:` / `:---:` alignment, measure wide
 characters by display width, and are left alone inside code fences.
 
 Tables are found by the markdown treesitter grammar, so they are aligned only where it is

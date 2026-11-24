@@ -8,14 +8,16 @@ Table of Contents                          *bemtvi-md-table-table-of-contents*
 3. Toggles                                           |bemtvi-md-table-toggles|
   - :MdTableToggle                    |bemtvi-md-table-toggles-:mdtabletoggle|
 4. Configuration                               |bemtvi-md-table-configuration|
-5. Highlights                                     |bemtvi-md-table-highlights|
-6. API                                                   |bemtvi-md-table-api|
+5. Fill chars                                     |bemtvi-md-table-fill-chars|
+6. Highlights                                     |bemtvi-md-table-highlights|
+7. API                                                   |bemtvi-md-table-api|
   - setup                                          |bemtvi-md-table-api-setup|
   - enabled                                      |bemtvi-md-table-api-enabled|
   - toggle                                        |bemtvi-md-table-api-toggle|
   - refresh                                      |bemtvi-md-table-api-refresh|
-7. How it works                                 |bemtvi-md-table-how-it-works|
-8. Tests                                               |bemtvi-md-table-tests|
+  - fillchars                                  |bemtvi-md-table-api-fillchars|
+8. How it works                                 |bemtvi-md-table-how-it-works|
+9. Tests                                               |bemtvi-md-table-tests|
 
 Lines up the columns of markdown pipe tables on screen without changing the
 text. Built entirely on the native `btv.*` plugin API.
@@ -32,15 +34,15 @@ is drawn as:
 
 >markdown
     | Queue ·| Upstream ······| Applied by |
-    |---─────|---─────────────|---─────────|
+    |--------|----------------|------------|
     | ingest | kafka://events | worker-a ··|
 <
 
-The padding is inline virtual text, drawn dimmed: the added spaces as `·` and
-the added dashes as `─`, so it can't be mistaken for text you typed. The
-buffer holds exactly what you typed, so writing the file leaves it unchanged,
-and motions move over the real characters only. Both the glyphs (see
-|bemtvi-md-table-configuration|) and the colours (see
+The padding is inline virtual text, drawn dimmed so it can't be mistaken for
+text you typed: the added spaces as `·`, the added dashes as `-` like the
+separator itself. The buffer holds exactly what you typed, so writing the file
+leaves it unchanged, and motions move over the real characters only. Both the
+glyphs (see |bemtvi-md-table-fill-chars|) and the colours (see
 |bemtvi-md-table-highlights|) can be changed.
 
                                                               *bemtvi-md-table*
@@ -127,20 +129,48 @@ a config re-applies. Unknown keys are an error.
       filetypes = { "markdown" },  -- the filetypes whose tables are aligned
       align = true,                -- honor ---: and :---: in the cells; false pads
                                    -- every cell on the right
-      chars = {                    -- the glyphs the padding is drawn in
-        pad = "·",                 -- in place of the added spaces
-        delimiter = "─",           -- in place of the added dashes
-      },
+      fillchars = "pad:·,delimiter:-",  -- the glyphs the padding is drawn in
     })
 <
 
-Each glyph must be one display cell wide, and either key can be left out to
-keep its default. `chars = { pad = " ", delimiter = "-" }` draws the padding as
-plain spaces and dashes.
+
+==============================================================================
+5. Fill chars                                     *bemtvi-md-table-fill-chars*
+
+The glyphs the padding is drawn in, set like the core's `'fillchars'` and
+`'listchars'`: a comma-separated `key:char` list.
+
+>lua
+    require("bemtvi-md-table").setup({ fillchars = "pad:·,delimiter:-" })
+<
+
+- `pad` — drawn in place of the spaces added to the cells. Default `·`.
+- `delimiter` — drawn in place of the dashes added to the delimiter row. Default `-`.
+
+The char is the one character after the colon, so `,` and `:` work as fill
+chars too (`"pad:,"`). Each must be one display cell wide. A key left out keeps
+its default, so `"pad: "` changes only the spaces. The table form `btv.opt`
+gives map options works too: `{ pad = " " }`. `"pad: "` draws the padding as
+plain spaces, its colour aside.
+
+Like a global-local option, it can be set at three levels, the most specific
+winning:
+
+>lua
+    require("bemtvi-md-table").setup({ fillchars = "pad: " })  -- the base
+    btv.g.md_table_fillchars = "pad:."                          -- overrides setup
+    btv.b[bufnr].md_table_fillchars = { pad = "+" }             -- one buffer
+<
+
+The variables are read on every repaint; after changing one from Lua, call
+`require("bemtvi-md-table").refresh()` to repaint straight away. An invalid
+value is an error: `setup` raises it, and a variable is reported once on the
+message line as `E474`, with that buffer's tables left unaligned until it is
+fixed.
 
 
 ==============================================================================
-5. Highlights                                     *bemtvi-md-table-highlights*
+6. Highlights                                     *bemtvi-md-table-highlights*
 
 - `MdTableDelimiter` — the dashes added to the delimiter row. Linked by default to `NonText`.
 - `MdTablePad` — the spaces added to the cells. Linked by default to `NonText`.
@@ -153,7 +183,7 @@ They are re-linked after a colorscheme loads.
 
 
 ==============================================================================
-6. API                                                   *bemtvi-md-table-api*
+7. API                                                   *bemtvi-md-table-api*
 
 
 SETUP                                              *bemtvi-md-table-api-setup*
@@ -186,8 +216,18 @@ REFRESH                                          *bemtvi-md-table-api-refresh*
 Repaint `bufnr`'s windows now, or every visible window with no argument.
 
 
+FILLCHARS                                      *bemtvi-md-table-api-fillchars*
+
+`require("bemtvi-md-table").fillchars(bufnr)`
+
+The fill chars in effect for `bufnr` (`0` = the current buffer), as `{ pad =
+..., delimiter = ... }`: the buffer's variable, else the global one, else
+setup's. An invalid variable returns `nil` and the `E474` message. See
+|bemtvi-md-table-fill-chars|.
+
+
 ==============================================================================
-7. How it works                                 *bemtvi-md-table-how-it-works*
+8. How it works                                 *bemtvi-md-table-how-it-works*
 
 A `btv.decor.provider` scoped to the configured filetypes runs whenever a
 window's viewport changes: on scroll, resize, or an edit. It declares the
@@ -205,7 +245,7 @@ each table's layout is cached until the buffer next changes (keyed on
 
 
 ==============================================================================
-8. Tests                                               *bemtvi-md-table-tests*
+9. Tests                                               *bemtvi-md-table-tests*
 
 >sh
     bemtvi --test-plugin .

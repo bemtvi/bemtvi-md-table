@@ -104,6 +104,7 @@ local USER_TABLE = {
 btv.test.describe("bemtvi-md-table", function()
   btv.test.before_each(function()
     btv.g.md_table_align = nil
+    btv.g.md_table_fillchars = nil
     md.setup({})
   end)
 
@@ -111,9 +112,7 @@ btv.test.describe("bemtvi-md-table", function()
     open(t, USER_TABLE)
     wait_aligned(t, 3, 5)
     expect(painted(t, 3)).to_be("| Queue | Upstream | Applied by |")
-    expect(painted(t, 4)).to_be(
-      "|---────|---───────|---─────────|"
-    )
+    expect(painted(t, 4)).to_be("|-------|----------|------------|")
     expect(painted(t, 5)).to_be("| a ····| b ·······| c ·········|")
   end)
 
@@ -169,7 +168,7 @@ btv.test.describe("bemtvi-md-table", function()
     open(t, { "| r | c |", "|--:|:-:|", "| xxxxx | xxxxx |" })
     wait_aligned(t, 1, 3)
     expect(painted(t, 1)).to_be("|···· r |·· c ··|")
-    expect(painted(t, 2)).to_be("|--────:|:-────:|")
+    expect(painted(t, 2)).to_be("|------:|:-----:|")
   end)
 
   btv.test.it("leaves a table inside a fenced code block alone", function(t)
@@ -208,8 +207,8 @@ btv.test.describe("bemtvi-md-table", function()
     })
     wait_aligned(t, 3, 4)
     wait_aligned(t, 6, 7)
-    expect(painted(t, 4)).to_be("  |---|---─────|")
-    expect(painted(t, 7)).to_be("> |---|---─────|")
+    expect(painted(t, 4)).to_be("  |---|--------|")
+    expect(painted(t, 7)).to_be("> |---|--------|")
   end)
 
   btv.test.it("draws nothing where treesitter is off", function(t)
@@ -248,12 +247,55 @@ btv.test.describe("bemtvi-md-table", function()
     expect(#inline(4)).to_be(0)
   end)
 
-  btv.test.it("draws the padding in the glyphs setup names", function(t)
-    md.setup({ chars = { pad = " ", delimiter = "-" } })
+  btv.test.it("draws the padding in setup's fillchars, as a key:char list", function(t)
+    md.setup({ fillchars = "pad: ,delimiter:-" })
     open(t, USER_TABLE)
     wait_aligned(t, 3, 5)
     expect(painted(t, 4)).to_be("|-------|----------|------------|")
     expect(painted(t, 5)).to_be("| a     | b        | c          |")
+  end)
+
+  btv.test.it("takes fillchars as a table, keeping the keys it leaves out", function(t)
+    md.setup({ fillchars = { pad = "_" } })
+    open(t, USER_TABLE)
+    wait_aligned(t, 3, 5)
+    expect(painted(t, 4)).to_be("|-------|----------|------------|")
+    expect(painted(t, 5)).to_be("| a ____| b _______| c _________|")
+  end)
+
+  btv.test.it("takes a comma or a colon as a fill char", function(t)
+    md.setup({ fillchars = "pad:,,delimiter::" })
+    open(t, USER_TABLE)
+    wait_aligned(t, 3, 5)
+    expect(painted(t, 4)).to_be("|---::::|---:::::::|---:::::::::|")
+    expect(painted(t, 5)).to_be("| a ,,,,| b ,,,,,,,| c ,,,,,,,,,|")
+  end)
+
+  btv.test.it("btv.g.md_table_fillchars overrides setup, and btv.b the global", function(t)
+    open(t, USER_TABLE)
+    wait_aligned(t, 3, 5)
+    btv.g.md_table_fillchars = "pad:."
+    md.refresh()
+    t:wait_for(function()
+      return painted(t, 5) == "| a ....| b .......| c .........|" or nil
+    end, { message = "the global fillchars were not drawn" })
+    btv.b.md_table_fillchars = { pad = "+" }
+    md.refresh(btv.buf.current())
+    t:wait_for(function()
+      return painted(t, 5) == "| a ++++| b +++++++| c +++++++++|" or nil
+    end, { message = "the buffer's fillchars did not win over the global ones" })
+  end)
+
+  btv.test.it("refuses bad fillchars in a variable loudly and draws nothing", function(t)
+    open(t, USER_TABLE)
+    wait_aligned(t, 3, 5)
+    btv.b.md_table_fillchars = "pad:ab"
+    md.refresh(btv.buf.current())
+    t:wait_for(function()
+      return (#inline(4) == 0) or nil
+    end, { message = "the table stayed padded with invalid fillchars" })
+    expect(t:message()).to_contain("E474")
+    expect(t:message()).to_contain("pad:ab")
   end)
 
   btv.test.it("links both padding groups to NonText by default", function()
@@ -261,13 +303,25 @@ btv.test.describe("bemtvi-md-table", function()
     expect(btv.hl.get(0, { name = "MdTableDelimiter" }).link).to_be("NonText")
   end)
 
-  btv.test.it("rejects a padding glyph that isn't one cell wide", function()
-    local ok, err = pcall(md.setup, { chars = { pad = "ab" } })
-    expect(ok).to_be(false)
-    expect(tostring(err)).to_contain("chars.pad")
-    ok, err = pcall(md.setup, { chars = { dash = "-" } })
-    expect(ok).to_be(false)
-    expect(tostring(err)).to_contain("unknown chars key 'dash'")
+  btv.test.it("rejects bad fillchars at setup", function()
+    for _, bad in ipairs({
+      "pad:ab",
+      "dash:-",
+      "pad",
+      "pad:",
+      "pad:x,",
+      { pad = "ab" },
+      { dash = "-" },
+      3,
+    }) do
+      local ok, err = pcall(md.setup, { fillchars = bad })
+      expect(ok).to_be(false)
+      expect(tostring(err)).to_contain("fillchars")
+    end
+    local _, err = pcall(md.setup, { fillchars = "pad:x,dash:-" })
+    expect(tostring(err)).to_contain("unknown key 'dash'")
+    _, err = pcall(md.setup, { fillchars = "pad:名" })
+    expect(tostring(err)).to_contain("one display cell")
   end)
 
   btv.test.it("rejects an unknown setup option", function()

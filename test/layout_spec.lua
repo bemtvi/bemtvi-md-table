@@ -104,10 +104,10 @@ btv.test.describe("layout.layout", function()
     expect(out[1]).to_be("| r     |")
   end)
 
-  btv.test.it("draws the padding in opts.chars", function()
+  btv.test.it("draws the padding in opts.fillchars", function()
     local out = painted(
       { "| r | c |", "|--:|---|", "| xxxxx | xxxxx |" },
-      { chars = { pad = "·", delimiter = "─" } }
+      { fillchars = { pad = "·", delimiter = "─" } }
     )
     expect(out[1]).to_be("|···· r | c ····|")
     expect(out[2]).to_be("|--────:|---────|")

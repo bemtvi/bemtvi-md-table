@@ -22,7 +22,7 @@ btv.plugins({
 -- 1. Open the sample.
 --
 --    SEE THAT: section 1's table is a grid. Its delimiter row reads
---    `|---──────|---─────────────|---─────────|` although the file holds `|---|---|---|`,
+--    `|---------|----------------|------------|` although the file holds `|---|---|---|`,
 --    and the short cells are padded out to the widest one in their column with a dim
 --    `·`. The padding is inline virtual text, dimmed so it can't pass for what you
 --    typed: `:w` writes exactly the file, and `$` on the delimiter row still lands on
@@ -55,5 +55,13 @@ btv.plugins({
 --    both linked to `NonText`. Restyle either; uncomment to see the dashes in red:
 -- btv.hl.define(0, "MdTableDelimiter", { fg = "#f38ba8" })
 --
---    The glyphs come from `setup`; uncomment to draw the padding as plain text:
--- require("bemtvi-md-table").setup({ chars = { pad = " ", delimiter = "-" } })
+--    The glyphs are fill chars, a `'fillchars'`-style key:char list. Set them for
+--    every buffer, or one (the buffer's wins), then repaint:
+--
+--    TYPE THIS: `:lua btv.g.md_table_fillchars = "pad:.,delimiter:="`
+--               `:lua require("bemtvi-md-table").refresh()`
+--    SEE THAT:  the padding turns to dots and the delimiter fill to `=`.
+--               `:lua btv.g.md_table_fillchars = nil` and refresh to go back.
+--
+--    Or from a config: `require("bemtvi-md-table").setup({ fillchars = "pad: " })` draws
+--    the added spaces as plain spaces (still dimmed, like the dashes).
