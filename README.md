@@ -14,12 +14,13 @@ Type a table without bothering to pad it:
 and it is drawn as a grid:
 
 ```markdown
-| Queue  | Upstream       | Applied by |
-|--------|----------------|------------|
-| ingest | kafka://events | worker-a   |
+| Queue ·| Upstream ······| Applied by |
+|---─────|---─────────────|---─────────|
+| ingest | kafka://events | worker-a ··|
 ```
 
-The padding is inline virtual text. The buffer still holds exactly what you typed, so `:w` writes
+The padding is inline virtual text, drawn dimmed, as `·` for the added spaces and `─` for the added
+dashes, so you can tell it from what you typed. The buffer still holds exactly what you typed, so `:w` writes
 it unchanged. Columns re-align as you type, respect `---:` / `:---:` alignment, measure wide
 characters by display width, and are left alone inside code fences.
 

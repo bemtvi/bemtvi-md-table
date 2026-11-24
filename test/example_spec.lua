@@ -56,7 +56,7 @@ end
 btv.test.describe("examples/sample.md", function()
   btv.test.it("1. the delimiter row reads as a full-width rule", function(t)
     local delim = open(t)
-    expect(pad(delim)).to_be(("-"):rep(6) .. ("-"):rep(13) .. ("-"):rep(9))
+    expect(pad(delim)).to_be(("─"):rep(6) .. ("─"):rep(13) .. ("─"):rep(9))
     expect(btv.bo.modified).to_be(false)
     t:feed(find(t, "|---|---|---|") .. "G$")
     expect(t:cursor()[2]).to_be(12)
@@ -67,7 +67,7 @@ btv.test.describe("examples/sample.md", function()
     t:feed("/ingest<CR>ea-and-more<Esc>")
     expect(t:lines()[find(t, "| ingest-and-more | kafka://events | worker-a |")]).never.to_be_nil()
     t:wait_for(function()
-      return (pad(delim):sub(1, 14) == ("-"):rep(14)) or nil
+      return (pad(delim):sub(1, #("─"):rep(14)) == ("─"):rep(14)) or nil
     end, { message = "column 1 did not widen" })
   end)
 

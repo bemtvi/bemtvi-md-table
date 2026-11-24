@@ -104,6 +104,15 @@ btv.test.describe("layout.layout", function()
     expect(out[1]).to_be("| r     |")
   end)
 
+  btv.test.it("draws the padding in opts.chars", function()
+    local out = painted(
+      { "| r | c |", "|--:|---|", "| xxxxx | xxxxx |" },
+      { chars = { pad = "·", delimiter = "─" } }
+    )
+    expect(out[1]).to_be("|···· r | c ····|")
+    expect(out[2]).to_be("|--────:|---────|")
+  end)
+
   btv.test.it("puts delimiter dashes before the cell's own trailing space", function()
     expect(painted({ "| Header |", "| --- |" })).to_equal({ "| Header |", "| ------ |" })
   end)

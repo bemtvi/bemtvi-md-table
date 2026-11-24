@@ -13,7 +13,10 @@
 -- ```
 --
 -- reads as an aligned grid while the buffer still holds exactly what you typed. Save
--- it and the file is unchanged; the padding exists only on screen.
+-- it and the file is unchanged; the padding exists only on screen, and it looks it:
+-- the added spaces are drawn as a faint `·` and the added dashes as a faint `─`
+-- (`setup({ chars = ... })` and the `MdTablePad` / `MdTableDelimiter` groups restyle
+-- them).
 --
 -- Where the tables are comes from the markdown treesitter grammar: the provider asks
 -- for `(pipe_table) @table` over the visible rows, and a table crossing the edge of the
@@ -36,10 +39,14 @@ local layout = require("bemtvi-md-table.layout")
 local M = {}
 
 local PROVIDER = "bemtvi-md-table"
-local DEFAULTS = { filetypes = { "markdown" }, align = true }
+local DEFAULTS = {
+  filetypes = { "markdown" },
+  align = true,
+  chars = { pad = "·", delimiter = "─" },
+}
 
 -- The live configuration (`setup` replaces it).
-M.config = { filetypes = DEFAULTS.filetypes, align = DEFAULTS.align }
+M.config = { filetypes = DEFAULTS.filetypes, align = DEFAULTS.align, chars = DEFAULTS.chars }
 
 -- Per-buffer layouts, valid for one `changedtick`:
 --   `{ tick, tables = { [first_row] = { first, last, pads } } }`
@@ -118,7 +125,10 @@ function M.marks(buf, top, bot, matches)
         tbl = {
           first = first,
           last = last,
-          pads = layout.layout(btv.buf.lines(buf, first, last + 1), { align = M.config.align }),
+          pads = layout.layout(
+            btv.buf.lines(buf, first, last + 1),
+            { align = M.config.align, chars = M.config.chars }
+          ),
         }
         c.tables[first] = tbl
       end
@@ -139,12 +149,35 @@ end
 
 -- ----- setup ------------------------------------------------------------------
 
--- The highlight groups the padding draws in. Both are `default` links, so a
--- colorscheme (or the user) can restyle them; they are re-linked after a colorscheme
--- loads, since loading one clears groups it does not define.
+-- The highlight groups the padding draws in, dimmed like other glyphs that aren't
+-- text (`NonText`). Both are `default` links, so a colorscheme (or the user) can
+-- restyle them; they are re-linked after a colorscheme loads, since loading one clears
+-- groups it does not define.
 local function define_highlights()
-  btv.hl.define(0, "MdTablePad", { link = "Normal", default = true })
-  btv.hl.define(0, "MdTableDelimiter", { link = "@punctuation.special", default = true })
+  btv.hl.define(0, "MdTablePad", { link = "NonText", default = true })
+  btv.hl.define(0, "MdTableDelimiter", { link = "NonText", default = true })
+end
+
+-- `opts.chars` merged over the defaults; each glyph must be a string one display cell
+-- wide, since the layout counts a pad's width in glyphs.
+local function chars_option(chars)
+  if chars == nil then
+    return DEFAULTS.chars
+  end
+  if type(chars) ~= "table" then
+    error("bemtvi-md-table.setup: chars must be a table", 3)
+  end
+  local out = { pad = DEFAULTS.chars.pad, delimiter = DEFAULTS.chars.delimiter }
+  for k, v in pairs(chars) do
+    if out[k] == nil then
+      error("bemtvi-md-table.setup: unknown chars key '" .. tostring(k) .. "'", 3)
+    end
+    if type(v) ~= "string" or btv.str.displaywidth(v) ~= 1 then
+      error("bemtvi-md-table.setup: chars." .. k .. " must be one display cell wide", 3)
+    end
+    out[k] = v
+  end
+  return out
 end
 
 -- `M.setup(opts)` — (re)configure and (re)register the provider. Called with `{}` by
@@ -156,6 +189,10 @@ end
 --   filetypes = { "markdown" },  -- the filetypes whose tables are aligned
 --   align = true,                -- honor `:---:` / `---:` in the cells; false pads
 --                                -- every cell on the right
+--   chars = {                    -- the glyphs the padding is drawn in, one display
+--     pad = "·",                 -- cell each; `{ pad = " ", delimiter = "-" }`
+--     delimiter = "─",           -- draws it as plain text
+--   },
 -- })
 -- ```
 function M.setup(opts)
@@ -172,7 +209,7 @@ function M.setup(opts)
   if type(fts) == "string" then
     fts = { fts }
   end
-  M.config = { filetypes = fts, align = opts.align ~= false }
+  M.config = { filetypes = fts, align = opts.align ~= false, chars = chars_option(opts.chars) }
   M._cache = {}
 
   define_highlights()

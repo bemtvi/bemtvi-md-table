@@ -22,10 +22,11 @@ btv.plugins({
 -- 1. Open the sample.
 --
 --    SEE THAT: section 1's table is a grid. Its delimiter row reads
---    `|---------|----------------|------------|` although the file holds `|---|---|---|`,
---    and the short cells are padded out to the widest one in their column.
---    The padding is inline virtual text: `:w` writes exactly what you typed, and
---    `$` on the delimiter row still lands on its 13th character.
+--    `|---──────|---─────────────|---─────────|` although the file holds `|---|---|---|`,
+--    and the short cells are padded out to the widest one in their column with a dim
+--    `·`. The padding is inline virtual text, dimmed so it can't pass for what you
+--    typed: `:w` writes exactly the file, and `$` on the delimiter row still lands on
+--    its 13th character.
 --
 -- 2. Edit a cell.
 --
@@ -50,7 +51,9 @@ btv.plugins({
 --    `btv.b.md_table_align = false` in one buffer.
 --------------------------------------------------------------------------------
 
--- 7. The padding's colours: the delimiter dashes are `MdTableDelimiter` (linked to
---    `@punctuation.special`, the delimiter row's own capture), the spaces
---    `MdTablePad`. Restyle either; uncomment to see the dashes in red:
+-- 7. The padding's look: the dashes are `MdTableDelimiter` and the spaces `MdTablePad`,
+--    both linked to `NonText`. Restyle either; uncomment to see the dashes in red:
 -- btv.hl.define(0, "MdTableDelimiter", { fg = "#f38ba8" })
+--
+--    The glyphs come from `setup`; uncomment to draw the padding as plain text:
+-- require("bemtvi-md-table").setup({ chars = { pad = " ", delimiter = "-" } })

@@ -15,13 +15,16 @@ A table typed without padding:
 is drawn as:
 
 ```markdown
-| Queue  | Upstream       | Applied by |
-|--------|----------------|------------|
-| ingest | kafka://events | worker-a   |
+| Queue ·| Upstream ······| Applied by |
+|---─────|---─────────────|---─────────|
+| ingest | kafka://events | worker-a ··|
 ```
 
-The extra spaces and dashes are inline virtual text. The buffer holds exactly what you typed, so
-writing the file leaves it unchanged, and motions move over the real characters only.
+The padding is inline virtual text, drawn dimmed: the added spaces as `·` and the added dashes as
+`─`, so it can't be mistaken for text you typed. The buffer holds exactly what you typed, so
+writing the file leaves it unchanged, and motions move over the real characters only. Both the
+glyphs (see [Configuration](#configuration)) and the colours (see [Highlights](#highlights)) can
+be changed.
 
 <!-- Passed through verbatim so `:help bemtvi-md-table` lands on this page
      (panvimdoc derives per-section tags but no bare project tag). -->
@@ -97,14 +100,23 @@ require("bemtvi-md-table").setup({
   filetypes = { "markdown" },  -- the filetypes whose tables are aligned
   align = true,                -- honor ---: and :---: in the cells; false pads
                                -- every cell on the right
+  chars = {                    -- the glyphs the padding is drawn in
+    pad = "·",                 -- in place of the added spaces
+    delimiter = "─",           -- in place of the added dashes
+  },
 })
 ```
 
+Each glyph must be one display cell wide, and either key can be left out to keep its default.
+`chars = { pad = " ", delimiter = "-" }` draws the padding as plain spaces and dashes.
+
 # Highlights
 
-- `MdTableDelimiter` — the dashes added to the delimiter row. Linked by default to
-  `@punctuation.special`, the capture the delimiter row itself is painted with.
-- `MdTablePad` — the spaces added to the cells. Linked by default to `Normal`.
+- `MdTableDelimiter` — the dashes added to the delimiter row. Linked by default to `NonText`.
+- `MdTablePad` — the spaces added to the cells. Linked by default to `NonText`.
+
+`NonText` is the dim group for glyphs that aren't part of the text, which keeps the padding
+visibly apart from what you typed.
 
 Both are `default` links, so a colorscheme or your config can restyle them. They are re-linked
 after a colorscheme loads.

@@ -114,10 +114,16 @@ end
 -- default), and on the delimiter row, dashes after the cell's last `-` — so `:---:`
 -- stays a centered marker and the colons stay at the edges.
 --
+-- `opts.chars = { pad = " ", delimiter = "-" }` names the glyphs the padding is drawn
+-- in (those are the defaults here); each must be one display cell wide, since a pad's
+-- width is its glyph count.
+--
 -- An open last cell (a row with no trailing pipe) still counts toward its column's
 -- width but is never padded: nothing follows it to line up.
 function M.layout(lines, opts)
   local align = not (opts and opts.align == false)
+  local chars = opts and opts.chars or {}
+  local pad_char, dash_char = chars.pad or " ", chars.delimiter or "-"
   local rows = {}
   for i, line in ipairs(lines) do
     rows[i] = M.row(line) or { indent = 0, cells = {} }
@@ -148,15 +154,15 @@ function M.layout(lines, opts)
               break
             end
           end
-          out[#out + 1] = { col = last, text = ("-"):rep(pad), delimiter = true }
+          out[#out + 1] = { col = last, text = dash_char:rep(pad), delimiter = true }
         else
           local how = align and aligns[j] or "left"
           local before = (how == "right" and pad) or (how == "center" and math.floor(pad / 2)) or 0
           if before > 0 then
-            out[#out + 1] = { col = cell.s - 1, text = (" "):rep(before) }
+            out[#out + 1] = { col = cell.s - 1, text = pad_char:rep(before) }
           end
           if pad - before > 0 then
-            out[#out + 1] = { col = cell.close - 1, text = (" "):rep(pad - before) }
+            out[#out + 1] = { col = cell.close - 1, text = pad_char:rep(pad - before) }
           end
         end
       end
