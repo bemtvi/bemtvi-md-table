@@ -21,16 +21,18 @@ M.MAX_ROWS = 20000
 -- and a table of many narrow columns stays under the other two caps.
 M.MAX_CELLS = 200000
 
-local displaywidth = btv.str.displaywidth
+-- The tab stops widths are measured on: the `'tabstop'` of the buffer the table is in,
+-- which its caller sets (`init.lua` does, per buffer). `nil` means the current buffer's.
+M.tabstop = nil
 
 -- The display cells `s` takes when it starts at screen column `col` (tabs expand from
--- there). Plain ASCII without a tab is one cell a byte, which skips the per-character
--- walk for the common cell.
+-- there, on `M.tabstop`). Plain ASCII without a tab is one cell a byte, which skips the
+-- measure for the common cell.
 local function width(s, col)
   if not s:find("[\t\128-\255]") then
     return #s
   end
-  return displaywidth(s, col or 0)
+  return btv.str.displaywidth(s, col or 0, M.tabstop)
 end
 M.width = width
 

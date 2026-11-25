@@ -247,11 +247,18 @@ btv.test.describe("bemtvi-md-table", function()
 
   btv.test.it("measures a tab from the column it sits at", function(t)
     md.setup({ fillchars = "pad:." })
-    -- " abc<Tab>d " starts at screen column 5, so the tab runs to 16: 13 cells.
+    -- " abc<Tab>d " starts at screen column 5, so on the default stops of 4 the tab
+    -- runs to 12: 9 cells.
     open(t, { "| x | abc\td |", "|---|---|" })
     t:wait_for(function()
-      return (painted(t, 2) == "|---|-------------|") or nil
+      return (painted(t, 2) == "|---|---------|") or nil
     end, { message = "the delimiter row was not padded to the tab's width" })
+    -- The buffer's own 'tabstop' decides: on stops of 8 the tab runs to 16, 13 cells.
+    btv.bo.tabstop = 8
+    md.refresh()
+    t:wait_for(function()
+      return (painted(t, 2) == "|---|-------------|") or nil
+    end, { message = "the padding didn't follow a 'tabstop' change" })
   end)
 
   btv.test.it("leaves a table too wide for any screen unaligned", function(t)

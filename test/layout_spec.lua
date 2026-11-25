@@ -252,8 +252,13 @@ btv.test.describe("layout: columns", function()
   end)
 
   btv.test.it("measures a tab in a later cell from its screen column", function()
-    -- " abc<Tab>d " starts at column 5: four cells to 9, the tab to 16, then two.
+    -- " abc<Tab>d " starts at column 5: four cells to 9, the tab to the next stop, then
+    -- two: to 16 on stops of 8, to 12 on stops of 4.
+    layout.tabstop = 8
     expect(layout.row("| x | abc\td |").cells[2].seg).to_be(13)
+    layout.tabstop = 4
+    expect(layout.row("| x | abc\td |").cells[2].seg).to_be(9)
+    layout.tabstop = nil
   end)
 
   btv.test.it("keeps a row's leading whitespace when shrinking", function()

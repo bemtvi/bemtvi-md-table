@@ -66,8 +66,8 @@ start of the line. That includes what comes before the table on each row: a bloc
 list item's indent, or the list marker a table starts right after (`- | a | b |`), each counted by
 its width, so rows that write them differently (`> ` then a lazy `>`, a tab for a list's indent)
 still line up their columns. Only the leading pipes of such rows can't agree. A `\|` is a
-literal pipe, not a cell boundary. A tab counts from the screen column it sits at, on a tabstop of
-8 (the editor's display-width measure doesn't read `'tabstop'` yet).
+literal pipe, not a cell boundary. A tab counts from the screen column it sits at, on the buffer's
+own `'tabstop'`.
 
 Left alone, because the grammar doesn't call them tables:
 

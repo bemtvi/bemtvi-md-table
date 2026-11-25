@@ -192,11 +192,12 @@ end
 -- (see `measure_table`). `prev` keeps older measures too, so a big table scrolled
 -- away from while editing elsewhere is still found, up to a budget of cells: past it
 -- the measures used longest ago go.
-local function cache_for(buf)
+local function cache_for(buf, tabstop)
   local tick = btv.buf.changedtick(buf)
   local c = M._cache[buf]
-  if not c then
-    c = { tick = tick, tables = {}, prev = {}, clock = 0 }
+  -- A tab's width follows `'tabstop'`, so a change to it re-measures from scratch.
+  if not c or c.tabstop ~= tabstop then
+    c = { tick = tick, tabstop = tabstop, tables = {}, prev = {}, clock = 0 }
     M._cache[buf] = c
   elseif c.tick ~= tick then
     for first, tbl in pairs(c.tables) do
@@ -378,7 +379,9 @@ end
 -- changed (see `measure_table`); its padding is built for the visible rows only.
 function M.marks(buf, top, bot, matches, fillchars)
   fillchars = fillchars or M.config.fillchars
-  local c = cache_for(buf)
+  local tabstop = btv.bo[buf].tabstop
+  layout.tabstop = tabstop
+  local c = cache_for(buf, tabstop)
   local opts = { align = M.config.align }
   local marks = {}
   for _, t in ipairs(tables_of(buf, matches)) do
@@ -454,6 +457,7 @@ local function reformat(name, transform, buf, first, last)
     table.sort(tables, function(x, y)
       return x.first > y.first
     end)
+    layout.tabstop = btv.bo[buf].tabstop
     local edits = {}
     for _, tbl in ipairs(tables) do
       local lines = btv.buf.lines(buf, tbl.first, tbl.last + 1)
