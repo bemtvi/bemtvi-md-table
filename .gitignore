@@ -7,3 +7,4 @@ examples/lua/
 doc/tags
 .panvimdoc/
 .panvimdoc.tmp.*/
+doc/*.tmp

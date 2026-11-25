@@ -200,6 +200,16 @@ btv.test.describe("MdTableShrink / MdTableExpand", function()
     wait_line(t, 2, "|--------|----------------|")
   end)
 
+  btv.test.it("says so cleanly in a buffer that isn't modifiable", function(t)
+    open(t, TWO_TABLES)
+    btv.bo.modifiable = false
+    local ok, err = pcall(btv.await, md.expand(0, 0, 0))
+    btv.bo.modifiable = true
+    expect(ok).to_be(false)
+    expect(tostring(err)).to_be("MdTableExpand: E21: Cannot make changes, 'modifiable' is off")
+    expect(t:lines()).to_equal(TWO_TABLES)
+  end)
+
   btv.test.it("fails loud off a table, leaving the buffer alone", function(t)
     open(t, TWO_TABLES)
     t:feed("5G")

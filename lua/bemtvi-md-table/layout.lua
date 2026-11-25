@@ -17,6 +17,10 @@ M.MAX_WIDTH = 1000
 -- row again whenever the buffer changes.
 M.MAX_ROWS = 20000
 
+-- And one of more cells than this, all rows together: each cell is parsed and kept,
+-- and a table of many narrow columns stays under the other two caps.
+M.MAX_CELLS = 200000
+
 local displaywidth = btv.str.displaywidth
 
 -- The display cells `s` takes when it starts at screen column `col` (tabs expand from
@@ -106,9 +110,22 @@ end
 -- With `limit`, parsing stops once the row runs past that display column, and the
 -- row is `{ wide = true, cells = {} }`: a table holding it is wider than any limit
 -- worth aligning, so the rest of it doesn't matter. (Not for rewriting: that row has
--- lost its cells.)
+-- lost its cells.) A cell is known to run past it before it is measured when it holds
+-- more bytes than the cells left could (a character is at most 4 bytes), so one huge
+-- cell costs nothing.
 function M.row(line, base, limit)
   base = base or 0
+  -- Plain ASCII without a tab: a cell's width is its byte count.
+  local plain = not line:find("[\t\128-\255]")
+  -- The width of `line`'s bytes `a`..`b` starting at screen column `col`, or nil when
+  -- that would run past `limit`.
+  local function measure(a, b, col)
+    local n = b - a + 1
+    if limit and n > (plain and 1 or 4) * (limit - col + 1) then
+      return nil
+    end
+    return plain and n or width(line:sub(a, b), col)
+  end
   local first_text = line:find("%S")
   if not first_text then
     return nil
@@ -133,10 +150,10 @@ function M.row(line, base, limit)
   end
   local seg_from, col = 1, base
   while p do
-    if limit and col > limit then
+    local w = (not limit or col <= limit) and measure(seg_from, p - 1, col)
+    if not w then
       return { wide = true, indent = "", cells = {} }
     end
-    local w = width(line:sub(seg_from, p - 1), col)
     cells[#cells + 1] =
       { s = prev + 1, e = p - 1, close = p, seg = w + (seg_from == 1 and base or 0) }
     col = col + w + 1 -- the pipe
@@ -144,7 +161,10 @@ function M.row(line, base, limit)
     p = next_pipe(line, p + 1)
   end
   if not trailing then
-    local w = width(line:sub(seg_from), col)
+    local w = measure(seg_from, #line, col)
+    if not w then
+      return { wide = true, indent = "", cells = {} }
+    end
     cells[#cells + 1] =
       { s = prev + 1, e = #line, close = nil, seg = w + (seg_from == 1 and base or 0) }
   end
@@ -177,6 +197,44 @@ end
 
 local NO_ROW = { indent = "", cells = {} }
 
+-- Fold one row into column widths: `widths[j]` is the widest `seg` in column `j` and
+-- `counts[j]` how many rows reach it. `sign` is 1 to add the row, -1 to take it out;
+-- taking out the last row at a column's width leaves its count at 0 (`dirty[j]`).
+local function fold(row, widths, counts, sign, dirty)
+  for j, cell in ipairs(row.cells) do
+    local seg, w = cell.seg, widths[j] or -1
+    if sign > 0 then
+      if seg > w then
+        widths[j], counts[j] = seg, 1
+      elseif seg == w then
+        counts[j] = counts[j] + 1
+      end
+    elseif seg == w then
+      counts[j] = counts[j] - 1
+      if counts[j] == 0 then
+        dirty[j] = true
+      end
+    end
+  end
+end
+
+-- Finish a measure: the alignments, whether row 2 is a delimiter row at all, and
+-- whether the table is too big to align.
+local function finish(m, delimiter)
+  local rows = m.rows
+  local aligns = M.aligns(rows[2], delimiter or "")
+  m.aligns, m.delimiter = aligns or {}, delimiter or ""
+  -- A table is a header row then a delimiter row; anything else (the grammar handed
+  -- over rows that aren't, say) is not padded, so nothing writes dashes into text.
+  m.table = aligns ~= nil and rows[1] ~= nil and #rows[1].cells > 0
+  local total = 0
+  for _, w in ipairs(m.widths) do
+    total = total + w + 1 -- and its pipe
+  end
+  m.wide = m.nwide > 0 or m.ncells > M.MAX_CELLS or #rows > M.MAX_ROWS or total > M.MAX_WIDTH
+  return m
+end
+
 -- `M.measure_rows(rows, delimiter)` -> measured. The column widths of a table already
 -- split into rows: `rows[i]` is `M.row` of line `i` (`false` for a line that isn't
 -- one), and `delimiter` is the text of line 2, the delimiter row:
@@ -185,46 +243,102 @@ local NO_ROW = { indent = "", cells = {} }
 -- measured = {
 --   rows      = { row, ... },
 --   widths    = { <display cells>, ... },  -- each column's widest `seg`
+--   counts    = { <rows at that width>, ... },
 --   aligns    = { "left" | "right" | "center", ... },  -- from the delimiter row
 --   delimiter = <line 2's text>,
+--   table     = <true when line 1 is a row and line 2 a delimiter row>,
+--   ncells    = <cells in all rows>,
+--   nwide     = <rows cut off past their limit (see `M.row`)>,
 --   wide      = <true when the table is too big to align: its widths and pipes add
---                up past `M.MAX_WIDTH`, a row was cut off past it (see `M.row`), or
---                it has more than `M.MAX_ROWS` rows>,
+--                up past `M.MAX_WIDTH`, a row was cut off past it, or it has more
+--                than `M.MAX_ROWS` rows or `M.MAX_CELLS` cells>,
 -- }
 -- ```
 function M.measure_rows(rows, delimiter)
-  local widths, total, wide = {}, 0, #rows > M.MAX_ROWS
+  local m = { rows = rows, widths = {}, counts = {}, ncells = 0, nwide = 0 }
   for i = 1, #rows do
     local row = rows[i] or NO_ROW
     rows[i] = row
-    wide = wide or row.wide == true
-    for j, cell in ipairs(row.cells) do
-      -- Every column gets a width, an empty cell's 0 included, so a row with more
-      -- cells than the header leaves no hole.
-      widths[j] = math.max(widths[j] or 0, cell.seg)
+    fold(row, m.widths, m.counts, 1)
+    m.ncells = m.ncells + #row.cells
+    if row.wide then
+      m.nwide = m.nwide + 1
     end
   end
-  for _, w in ipairs(widths) do
-    total = total + w + 1 -- and its pipe
-  end
-  return {
+  return finish(m, delimiter)
+end
+
+-- `M.update(prev, rows, delimiter, gone, came)` -> measured. `prev` re-measured for an
+-- edit, without walking every row again: `rows` is the new table (as for
+-- `M.measure_rows`), `gone` the rows of `prev` the edit replaced and `came` the rows
+-- that replaced them (both also in `rows`). Only a column whose widest cell went is
+-- scanned again. `prev` is left as it was.
+function M.update(prev, rows, delimiter, gone, came)
+  local m = {
     rows = rows,
-    widths = widths,
-    aligns = M.aligns(rows[2], delimiter or "") or {},
-    delimiter = delimiter or "",
-    wide = wide or total > M.MAX_WIDTH,
+    widths = table.move(prev.widths, 1, #prev.widths, 1, {}),
+    counts = table.move(prev.counts, 1, #prev.counts, 1, {}),
+    ncells = prev.ncells,
+    nwide = prev.nwide,
   }
+  local dirty = {}
+  for _, row in ipairs(gone) do
+    fold(row, m.widths, m.counts, -1, dirty)
+    m.ncells = m.ncells - #row.cells
+    m.nwide = m.nwide - (row.wide and 1 or 0)
+  end
+  for i, row in ipairs(came) do
+    row = row or NO_ROW
+    came[i] = row
+    fold(row, m.widths, m.counts, 1)
+    m.ncells = m.ncells + #row.cells
+    m.nwide = m.nwide + (row.wide and 1 or 0)
+  end
+  for i = 1, #rows do
+    rows[i] = rows[i] or NO_ROW
+  end
+  local ncols = #prev.widths
+  for _, row in ipairs(came) do
+    ncols = math.max(ncols, #row.cells)
+  end
+  for j in pairs(dirty) do
+    if m.counts[j] == 0 then
+      local w, n = nil, 0
+      for _, row in ipairs(rows) do
+        local cell = row.cells[j]
+        if cell then
+          if not w or cell.seg > w then
+            w, n = cell.seg, 1
+          elseif cell.seg == w then
+            n = n + 1
+          end
+        end
+      end
+      m.widths[j], m.counts[j] = w, n
+    end
+  end
+  -- A column no row reaches any more ends the widths there. (Cells run from column 1
+  -- up, so only the last columns can lose every cell.)
+  for j = ncols, 1, -1 do
+    if m.widths[j] ~= nil then
+      break
+    end
+    m.counts[j] = nil
+  end
+  return finish(m, delimiter)
 end
 
 -- `M.measure(lines[, opts])` -> measured. Parses one whole table (the header row, the
 -- delimiter row, then the body rows) and works out its column widths, as
--- `M.measure_rows`. `opts.base[i]` is the display column line `i` starts at (see
--- `M.row`).
+-- `M.measure_rows`. `opts.base[i]` is the display column line `i` starts at, and
+-- `opts.limit` how far past it a row is parsed (see `M.row`).
 function M.measure(lines, opts)
   local base = opts and opts.base or {}
+  local limit = opts and opts.limit
   local rows = {}
   for i, line in ipairs(lines) do
-    rows[i] = M.row(line, base[i] or 0) or false
+    local b = base[i] or 0
+    rows[i] = M.row(line, b, limit and b + limit) or false
   end
   return M.measure_rows(rows, lines[2])
 end
@@ -241,14 +355,15 @@ end
 -- `opts.align` is on, the default), and on the delimiter row (line 2) after the cell's
 -- last `-`, so `:---:` stays a centered marker and the colons stay at the edges. An
 -- open last cell (no trailing pipe) is never padded: nothing follows it to line up.
--- Nothing is padded in a table too wide to align (`measured.wide`).
+-- Nothing is padded in a table too big to align (`measured.wide`), or in one whose
+-- first two lines aren't a header and a delimiter row (`measured.table`).
 --
 -- `opts.text_first` keeps the first cell of a row without a leading pipe padded on the
 -- right whatever its column's alignment: padding written before its text would read
 -- as indentation (and four spaces of it make the table an indented code block).
 function M.row_pads(measured, i, opts)
   local out = {}
-  if measured.wide then
+  if measured.wide or not measured.table then
     return out
   end
   local align = not (opts and opts.align == false)
@@ -317,12 +432,20 @@ end
 -- no padding. A row keeps its leading whitespace and its outer pipes, or their
 -- absence, and no cell is added or dropped. `lines` is one whole table, as for
 -- `M.layout`, starting at the table's first column (no block quote or list prefix).
+-- `nil` and the reason when `lines` doesn't start with a header row and a delimiter
+-- row, or holds more than `M.MAX_ROWS` rows: nothing is rewritten that isn't a table.
 function M.shrink(lines)
+  if #lines > M.MAX_ROWS then
+    return nil, ("the table is longer than %d rows"):format(M.MAX_ROWS)
+  end
   local rows = {}
   for i, line in ipairs(lines) do
     rows[i] = M.row(line)
   end
   local delimiter = M.aligns(rows[2], lines[2] or "") ~= nil
+  if not (delimiter and rows[1] and #rows[1].cells > 0) then
+    return nil, "its first two lines aren't a header row and a delimiter row"
+  end
   local out = {}
   for i, line in ipairs(lines) do
     local row = rows[i]
@@ -362,26 +485,29 @@ end
 -- (`M.shrink`), so stray spacing is dropped, then every cell padded to its column's
 -- widest. `opts.align` (default true) places the padding by the delimiter row's
 -- colons, and `opts.base` gives each line's starting column, as for `M.measure`.
--- `nil` and the reason for a table too wide to align (see `M.MAX_WIDTH`), or one
--- with a tab in a cell: padding written before a tab moves it to another tab stop and
+-- `nil` and the reason for what `M.shrink` refuses, a table too big to align (see
+-- `M.MAX_WIDTH` and `M.MAX_CELLS`), or one with a tab in a cell: padding written before a tab moves it to another tab stop and
 -- changes its width, so no padding lines it up for good.
 --
 -- The first cell of a row without a leading pipe is padded on the right whatever its
 -- column's alignment (see `opts.text_first` on `M.row_pads`).
 function M.expand(lines, opts)
-  local shrunk = M.shrink(lines)
+  local shrunk, why = M.shrink(lines)
+  if not shrunk then
+    return nil, why
+  end
   for _, line in ipairs(shrunk) do
     -- (A tab in the leading whitespace sits before any padding, so it never moves.)
     if line:find("\t", #line:match("^%s*") + 1, true) then
       return nil, "a cell holds a tab, which padding would move; replace it with spaces"
     end
   end
-  local measured = M.measure(shrunk, { base = opts and opts.base })
+  local measured = M.measure(shrunk, { base = opts and opts.base, limit = M.MAX_WIDTH })
   if measured.wide then
     return nil,
-      ("the table is wider than %d display cells or longer than %d rows"):format(
+      ("the table is wider than %d display cells or holds more than %d cells"):format(
         M.MAX_WIDTH,
-        M.MAX_ROWS
+        M.MAX_CELLS
       )
   end
   local pad_opts = { align = not (opts and opts.align == false), text_first = true }

@@ -80,10 +80,14 @@ Buffers where treesitter is off (`btv.bo.ts_highlight = false`) get no alignment
 The last cell of a row with no trailing pipe counts toward its column's width but is not padded,
 because nothing after it needs lining up.
 
-A table whose columns and pipes add up to more than 1000 display cells, or that has more than 20000
-rows, is left unaligned: a table that wide can't line up on any screen, and padding it would mean a
-string as long as its widest cell on every row; one that long would be read again on every change
-to the buffer.
+A table whose columns and pipes add up to more than 1000 display cells, that has more than 20000
+rows, or that holds more than 200000 cells in all is left unaligned: a table that wide can't line up
+on any screen, and padding it would mean a string as long as its widest cell on every row; one that
+long or that dense costs too much to read again as the buffer changes. Reading such a table stops as
+soon as it's known to be one.
+
+So does anything whose first two lines aren't a header row and a delimiter row, should the grammar
+ever hand one over: nothing is padded, and neither command rewrites it.
 
 # Toggles
 
@@ -150,8 +154,9 @@ Both commands:
 - keep each row's leading whitespace, and anything after its last pipe other than spaces and tabs
   (a stray `\r`);
 - fail with an error, leaving the buffer alone, when there is no table at the cursor or in the
-  range, or when a table in it can't be rewritten (`:MdTableExpand` refuses one too big to align,
-  see [What it aligns](#what-it-aligns), or with a tab in a cell). It's all or nothing: when one table of a range fails, none is changed;
+  range, when the buffer isn't modifiable, or when a table in it can't be rewritten: both refuse one
+  over 20000 rows or that doesn't start with a header and a delimiter row, and `:MdTableExpand` also
+  one too big to align (see [What it aligns](#what-it-aligns)) or with a tab in a cell. It's all or nothing: when one table of a range fails, none is changed;
 - leave an already-formatted table untouched (the buffer isn't marked modified) and say so.
 
 Each table a range rewrites is its own edit, so it takes one `u` per table to undo the command.
@@ -272,9 +277,11 @@ first parse is unfinished, it keeps what is drawn and runs again when the tree i
 
 Only tables on screen are measured, and each table's column widths are cached until the buffer next
 changes (keyed on `btv.buf.changedtick`). Its parsed rows outlive that: after an edit the table's
-rows are compared with the previous ones from both ends, and only those in between are parsed again,
-so a table next to an edit isn't parsed at all. Parsing a row stops once it runs past the width
-limit. The padding itself is built for the visible rows only. The cache is dropped when the buffer
+rows are compared with the previous ones from both ends, only those in between are parsed again, and
+the column widths are updated from those rows alone, so a table next to an edit isn't parsed at all.
+Earlier measures are kept, up to a budget of cells, so a big table scrolled away from while you edit
+elsewhere isn't parsed again when you come back. Parsing a row stops once it runs past the width
+limit, and a cell too long to fit is known to be without measuring it. The padding itself is built for the visible rows only. The cache is dropped when the buffer
 is deleted.
 
 # Tests

@@ -187,17 +187,36 @@ end
 
 -- ----- analysis ---------------------------------------------------------------
 
--- The cache entry for `buf`. Its tables are valid for one `changedtick`; on a change
--- the ones measured so far move to `prev`, where the next measure of each finds the
--- rows the edit left alone (see `measure_table`).
+-- The cache entry for `buf`. `tables` holds what was measured at `tick`; on a change
+-- they join `prev`, where a later measure of each finds the rows the edit left alone
+-- (see `measure_table`). `prev` keeps older measures too, so a big table scrolled
+-- away from while editing elsewhere is still found, up to a budget of cells: past it
+-- the measures used longest ago go.
 local function cache_for(buf)
   local tick = btv.buf.changedtick(buf)
   local c = M._cache[buf]
   if not c then
-    c = { tick = tick, tables = {}, prev = {} }
+    c = { tick = tick, tables = {}, prev = {}, clock = 0 }
     M._cache[buf] = c
   elseif c.tick ~= tick then
-    c.tick, c.prev, c.tables = tick, c.tables, {}
+    for first, tbl in pairs(c.tables) do
+      c.prev[first] = tbl
+    end
+    local list = {}
+    for first, tbl in pairs(c.prev) do
+      list[#list + 1] = { first = first, stamp = tbl.stamp, cells = tbl.measured.ncells }
+    end
+    table.sort(list, function(x, y)
+      return x.stamp > y.stamp
+    end)
+    local budget = 2 * layout.MAX_CELLS
+    for i, e in ipairs(list) do
+      budget = budget - e.cells
+      if budget < 0 and i > 1 then
+        c.prev[e.first] = nil
+      end
+    end
+    c.tick, c.tables = tick, {}
   end
   return c
 end
@@ -241,19 +260,41 @@ local function tables_of(buf, matches)
   return out
 end
 
--- The table measured before the last change that `t` most likely is now: the one
--- that started on the same row, else the nearest (lines added or removed above it
--- moved it). `measure_table` checks the rows themselves, so a wrong guess only costs
--- a full parse.
-local function previous(c, t)
-  local best = c.prev[t.first]
-  if best then
-    return best
+-- A row too wide to align, for a row whose prefix alone is past the width limit.
+local WIDE_ROW = { wide = true, indent = "", cells = {} }
+
+-- What a table too big to align measures as: nothing kept to reuse.
+local function too_big(t)
+  t.lines, t.offs, t.complete = {}, {}, false
+  return {
+    rows = {},
+    widths = {},
+    counts = {},
+    aligns = {},
+    delimiter = "",
+    table = false,
+    ncells = 0,
+    nwide = 1,
+    wide = true,
+  }
+end
+
+-- The earlier measure that `t` most likely is now, given its `header` line: the one
+-- that started on the same row, else one with the same header line (lines added or
+-- removed above it moved it), else the nearest. `measure_table` checks the rows
+-- themselves, so a wrong guess only costs a full parse.
+local function previous(c, t, header)
+  local same = c.prev[t.first]
+  if same and same.col == t.col then
+    return same
   end
-  local dist = math.huge
+  local best, dist = nil, math.huge
   for first, p in pairs(c.prev) do
-    if p.col == t.col and math.abs(first - t.first) < dist then
-      best, dist = p, math.abs(first - t.first)
+    if p.col == t.col and p.complete then
+      local d = math.abs(first - t.first) + (p.lines[1] == header and 0 or 1e9)
+      if d < dist then
+        best, dist = p, d
+      end
     end
   end
   return best
@@ -263,20 +304,24 @@ end
 -- starts on it (see `prefix_len`), the prefix before it counted by its width.
 --
 -- A buffer line the edit didn't touch is the very same string as before, so the rows
--- matching the previous measure's from either end (`==` on those is a pointer check)
--- keep their parse, and only the rows in between are parsed again: the table an edit
--- was made in costs the changed rows, and a table next to the edit, none. Row 1 is
--- never taken from the other end, since its prefix is read differently.
+-- matching an earlier measure's from either end (`==` on those is a pointer check)
+-- keep their parse, and only the rows in between are parsed again; the column widths
+-- are updated from those rows alone (`layout.update`). The table an edit was made in
+-- costs the changed rows, and a table next to the edit, none. Row 1 is never taken
+-- from the other end, since its prefix is read differently.
+--
+-- Parsing stops as soon as the table is known to be too big to align.
 local function measure_table(buf, c, t)
+  c.clock = c.clock + 1
+  t.stamp = c.clock
   if t.last - t.first + 1 > layout.MAX_ROWS then
-    t.lines, t.offs = {}, {}
-    return { rows = {}, widths = {}, aligns = {}, delimiter = "", wide = true }
+    return too_big(t)
   end
   local lines = btv.buf.lines(buf, t.first, t.last + 1)
   local n, rows, offs = #lines, {}, {}
   local head, tail = 0, 0
-  local prev = previous(c, t)
-  if prev and prev.col == t.col then
+  local prev = previous(c, t, lines[1])
+  if prev and prev.complete then
     local pl, pn = prev.lines, #prev.lines
     while head < n and head < pn and lines[head + 1] == pl[head + 1] do
       head = head + 1
@@ -291,19 +336,35 @@ local function measure_table(buf, c, t)
       tail = tail + 1
     end
   end
+  local came, cells = {}, 0
   for i = head + 1, n - tail do
     local line = lines[i]
     local p = prefix_len(line, i, t.col)
-    offs[i] = p
+    local row
     if p == 0 then
-      rows[i] = layout.row(line, 0, layout.MAX_WIDTH) or false
+      row = layout.row(line, 0, layout.MAX_WIDTH)
+    elseif p > layout.MAX_WIDTH then
+      row = WIDE_ROW -- (each byte of a prefix is at least one cell)
     else
       local base = layout.width(line:sub(1, p))
-      rows[i] = layout.row(line:sub(p + 1), base, base + layout.MAX_WIDTH) or false
+      row = layout.row(line:sub(p + 1), base, base + layout.MAX_WIDTH)
     end
+    if row and row.wide then
+      return too_big(t)
+    end
+    cells = cells + (row and #row.cells or 0)
+    if cells > layout.MAX_CELLS then
+      return too_big(t)
+    end
+    rows[i], offs[i] = row or false, p
+    came[#came + 1] = row or false
   end
-  t.lines, t.offs = lines, offs
+  t.lines, t.offs, t.complete = lines, offs, true
   local delimiter = lines[2] and lines[2]:sub((offs[2] or 0) + 1)
+  if prev and prev.complete and head + tail > 0 then
+    local gone = table.move(prev.measured.rows, head + 1, #prev.lines - tail, 1, {})
+    return layout.update(prev.measured, rows, delimiter, gone, came)
+  end
   return layout.measure_rows(rows, delimiter)
 end
 
@@ -398,6 +459,9 @@ local function reformat(name, transform, buf, first, last)
           break
         end
       end
+    end
+    if #edits > 0 and btv.bo[buf].modifiable == false then
+      error(name .. ": E21: Cannot make changes, 'modifiable' is off", 0)
     end
     for _, e in ipairs(edits) do
       btv.buf.set_lines(buf, e[1], e[2], true, e[3])

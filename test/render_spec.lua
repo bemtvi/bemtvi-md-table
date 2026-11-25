@@ -317,6 +317,62 @@ btv.test.describe("bemtvi-md-table", function()
     end, { message = "the row with an extra empty cell was never padded" })
   end)
 
+  btv.test.it("stops parsing a table of too many cells, and draws nothing", function(t)
+    local narrow = ("|x"):rep(400) .. "|"
+    local doc = { ("|a"):rep(400) .. "|", ("|-"):rep(400) .. "|" }
+    for i = 1, 1000 do
+      doc[#doc + 1] = narrow
+    end
+    open(t, doc)
+    local layout = require("bemtvi-md-table.layout")
+    local real, parsed = layout.row, 0
+    layout.row = function(...)
+      parsed = parsed + 1
+      return real(...)
+    end
+    md._cache = {}
+    md.refresh()
+    t:wait_for(function()
+      return (parsed > 0) or nil
+    end, { message = "the provider never ran" })
+    t:sleep(100)
+    layout.row = real
+    expect(parsed < 600).to_be(true)
+    expect(#inline(2)).to_be(0)
+  end)
+
+  btv.test.it("keeps a big table's parse across edits made elsewhere", function(t)
+    local doc = { "| k | v |", "|---|---|" }
+    for i = 1, 3000 do
+      doc[#doc + 1] = ("| %d | x |"):format(i)
+    end
+    -- Far enough below that the big table leaves the screen.
+    for _ = 1, 200 do
+      doc[#doc + 1] = ""
+    end
+    for _, line in ipairs({ "Elsewhere.", "", "| a | b |", "|---|---|", "| c | d |" }) do
+      doc[#doc + 1] = line
+    end
+    open(t, doc)
+    wait_aligned(t, 1, 3)
+    -- Away to the small table at the end, two edits there, then back.
+    t:feed("G")
+    t:feed("A!<Esc>")
+    t:feed("A?<Esc>")
+    t:sleep(200)
+    local layout = require("bemtvi-md-table.layout")
+    local real, parsed = layout.row, 0
+    layout.row = function(...)
+      parsed = parsed + 1
+      return real(...)
+    end
+    t:feed("gg")
+    wait_aligned(t, 1, 3)
+    t:sleep(100)
+    layout.row = real
+    expect(parsed).to_be(0)
+  end)
+
   btv.test.it("forgets a buffer's layout when the buffer is deleted", function(t)
     open(t, USER_TABLE)
     wait_aligned(t, 3, 5)

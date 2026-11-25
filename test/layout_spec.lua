@@ -320,3 +320,130 @@ btv.test.describe("layout: rows the header doesn't account for", function()
     expect(layout.shrink({ "|  a |\r", "|---|" })).to_equal({ "| a |\r", "|---|" })
   end)
 end)
+
+btv.test.describe("layout.update", function()
+  -- A random row: 0-6 cells of 0-9 letters, with or without outer pipes.
+  local function random_row(rand)
+    local cells = {}
+    for i = 1, rand(0, 6) do
+      cells[i] = (" x"):rep(rand(0, 9))
+    end
+    if #cells == 0 then
+      return "no pipes here"
+    end
+    local body = table.concat(cells, "|")
+    return (rand(0, 1) == 1 and "|" or "") .. body .. (rand(0, 1) == 1 and "|" or "")
+  end
+
+  btv.test.it("agrees with a full measure after any edit", function()
+    local seed = 12345
+    local function rand(a, b)
+      seed = (seed * 1103515245 + 12345) % 2147483648
+      return a + seed % (b - a + 1)
+    end
+    for _ = 1, 300 do
+      local lines = { "| a | b | c |", "|---|:-:|--:|" }
+      for i = 3, rand(2, 12) do
+        lines[i] = random_row(rand)
+      end
+      local rows = {}
+      for i, line in ipairs(lines) do
+        rows[i] = layout.row(line) or false
+      end
+      local prev = layout.measure_rows(rows, lines[2])
+      -- Replace a random run of rows (never the delimiter) with a random new run.
+      local a = rand(3, #lines + 1)
+      local b = rand(a - 1, #lines)
+      local new_lines, gone, came = {}, {}, {}
+      for i = 1, a - 1 do
+        new_lines[#new_lines + 1] = lines[i]
+      end
+      for i = a, b do
+        gone[#gone + 1] = prev.rows[i]
+      end
+      for _ = 1, rand(0, 4) do
+        new_lines[#new_lines + 1] = random_row(rand)
+        came[#came + 1] = layout.row(new_lines[#new_lines]) or false
+      end
+      for i = b + 1, #lines do
+        new_lines[#new_lines + 1] = lines[i]
+      end
+      local new_rows, k = {}, 0
+      for i = 1, a - 1 do
+        new_rows[i] = prev.rows[i]
+      end
+      for i = 1, #came do
+        new_rows[a - 1 + i] = came[i]
+        k = i
+      end
+      for i = b + 1, #lines do
+        new_rows[a + k + (i - b - 1)] = prev.rows[i]
+      end
+      local got = layout.update(prev, new_rows, new_lines[2], gone, came)
+      local fresh = {}
+      for i, line in ipairs(new_lines) do
+        fresh[i] = layout.row(line) or false
+      end
+      local want = layout.measure_rows(fresh, new_lines[2])
+      expect(got.widths).to_equal(want.widths)
+      expect(got.ncells).to_be(want.ncells)
+      expect(got.wide).to_be(want.wide)
+      for j, w in ipairs(want.widths) do
+        local n = 0
+        for _, row in ipairs(want.rows) do
+          if row.cells[j] and row.cells[j].seg == w then
+            n = n + 1
+          end
+        end
+        expect(got.counts[j]).to_be(n)
+      end
+    end
+  end)
+end)
+
+btv.test.describe("layout: caps that stop the work early", function()
+  local function timed(fn)
+    local t0 = btv.now_ms()
+    local out = fn()
+    return out, btv.now_ms() - t0
+  end
+
+  btv.test.it("knows a huge cell runs past the limit without measuring it", function()
+    local cjk = ("日"):rep(1000000)
+    local row, ms = timed(function()
+      return layout.row(cjk .. " | b |", 0, 1000)
+    end)
+    expect(row.wide).to_be(true)
+    expect(ms < 50).to_be(true)
+    row, ms = timed(function()
+      return layout.row("| a | " .. cjk, 0, 1000)
+    end)
+    expect(row.wide).to_be(true)
+    expect(ms < 50).to_be(true)
+  end)
+
+  btv.test.it("is wide past MAX_CELLS", function()
+    local rows = {}
+    local narrow = ("|x"):rep(400) .. "|"
+    for i = 1, layout.MAX_CELLS // 400 + 2 do
+      rows[i] = layout.row(narrow)
+    end
+    expect(layout.measure_rows(rows, narrow).wide).to_be(true)
+  end)
+
+  btv.test.it("pads nothing when line 2 isn't a delimiter row", function()
+    local m = layout.measure({ "| a | bb |", "| ccc | d |", "| e | f |" })
+    expect(m.table).to_be(false)
+    for i = 1, 3 do
+      expect(#layout.row_pads(m, i)).to_be(0)
+    end
+  end)
+
+  btv.test.it("refuses to rewrite what doesn't start with a header and a delimiter", function()
+    for _, fn in ipairs({ layout.shrink, layout.expand }) do
+      local out, why = fn({ "| a | bb |", "| ccc | d |" })
+      expect(out).to_be_nil()
+      expect(why).to_match("delimiter row")
+    end
+  end)
+end)
