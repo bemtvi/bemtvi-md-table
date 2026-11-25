@@ -49,6 +49,16 @@ btv.plugins({
 --               `:MdTableToggle`  -> and comes back.
 --    `btv.g.md_table_align = false` in a config turns it off everywhere;
 --    `btv.b.md_table_align = false` in one buffer.
+--
+-- 8. Write the padding into the file, and take it out again.
+--
+--    TYPE THIS: `/ingest<CR>` then `:MdTableExpand`
+--    SEE THAT:  section 1's table now holds real spaces and dashes: the dim padding is
+--               gone because there is nothing left to pad, and `:w` would save the grid.
+--    TYPE THIS: `:MdTableShrink`
+--    SEE THAT:  the text is back to one space per cell and `|---|---|---|`, drawn as a
+--               grid again by the virtual padding.
+--    `:%MdTableExpand` (any range) rewrites every table it touches.
 --------------------------------------------------------------------------------
 
 -- 7. The padding's look: the dashes are `MdTableDelimiter` and the spaces `MdTablePad`,

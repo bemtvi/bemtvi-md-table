@@ -7,17 +7,22 @@ Table of Contents                          *bemtvi-md-table-table-of-contents*
 2. What it aligns                             |bemtvi-md-table-what-it-aligns|
 3. Toggles                                           |bemtvi-md-table-toggles|
   - :MdTableToggle                    |bemtvi-md-table-toggles-:mdtabletoggle|
-4. Configuration                               |bemtvi-md-table-configuration|
-5. Fill chars                                     |bemtvi-md-table-fill-chars|
-6. Highlights                                     |bemtvi-md-table-highlights|
-7. API                                                   |bemtvi-md-table-api|
+4. Rewriting a table                       |bemtvi-md-table-rewriting-a-table|
+  - :MdTableExpand          |bemtvi-md-table-rewriting-a-table-:mdtableexpand|
+  - :MdTableShrink          |bemtvi-md-table-rewriting-a-table-:mdtableshrink|
+5. Configuration                               |bemtvi-md-table-configuration|
+6. Fill chars                                     |bemtvi-md-table-fill-chars|
+7. Highlights                                     |bemtvi-md-table-highlights|
+8. API                                                   |bemtvi-md-table-api|
   - setup                                          |bemtvi-md-table-api-setup|
   - enabled                                      |bemtvi-md-table-api-enabled|
   - toggle                                        |bemtvi-md-table-api-toggle|
   - refresh                                      |bemtvi-md-table-api-refresh|
+  - shrink                                        |bemtvi-md-table-api-shrink|
+  - expand                                        |bemtvi-md-table-api-expand|
   - fillchars                                  |bemtvi-md-table-api-fillchars|
-8. How it works                                 |bemtvi-md-table-how-it-works|
-9. Tests                                               |bemtvi-md-table-tests|
+9. How it works                                 |bemtvi-md-table-how-it-works|
+10. Tests                                              |bemtvi-md-table-tests|
 
 Lines up the columns of markdown pipe tables on screen without changing the
 text. Built entirely on the native `btv.*` plugin API.
@@ -118,7 +123,59 @@ repaint; after changing one from Lua, call
 
 
 ==============================================================================
-4. Configuration                               *bemtvi-md-table-configuration*
+4. Rewriting a table                       *bemtvi-md-table-rewriting-a-table*
+
+The alignment above is only drawn. Two commands change the text itself, for
+when the file should hold a grid (or should stop holding one).
+
+
+:MDTABLEEXPAND              *bemtvi-md-table-rewriting-a-table-:mdtableexpand*
+
+`:[range]MdTableExpand` writes the table under the cursor as the aligned grid
+the plugin draws, with real spaces and dashes:
+
+>markdown
+    | Queue  | Upstream       | Applied by |
+    |--------|----------------|------------|
+    | ingest | kafka://events | worker-a   |
+<
+
+Stray spacing in the cells is dropped first, then each cell is padded to its
+column's widest, before its text in a right-aligned column and on both sides
+in a centered one (with `align = false` in `setup`, always on the right). Once
+the text is a grid there is nothing left to pad, so no padding is drawn over
+it.
+
+
+:MDTABLESHRINK              *bemtvi-md-table-rewriting-a-table-:mdtableshrink*
+
+`:[range]MdTableShrink` writes the table in the least space it takes: each
+cell's text one space from its pipes (an empty cell is a single space), and
+each delimiter cell cut to three characters that keep its alignment, `---`,
+`:--`, `--:` or `:-:`, with no spaces around them:
+
+>markdown
+    | Queue | Upstream | Applied by |
+    |---|---|---|
+    | ingest | kafka://events | worker-a |
+<
+
+Alignment, if on, keeps drawing the shrunk table as a grid.
+
+Both commands:
+
+- rewrite every table the range touches when given one (`:%MdTableExpand` does the whole buffer);
+- keep each row's outer pipes, or their absence, and never add or drop a cell;
+- keep what comes before the table on each row: a block quote's `>` and a list item's indent;
+- find tables through the markdown treesitter grammar, as the alignment does, so a table in a code
+    fence is never touched;
+- fail with an error, leaving the buffer alone, when there is no table at the cursor or in the
+    range;
+- leave an already-formatted table untouched (the buffer isn't marked modified) and say so.
+
+
+==============================================================================
+5. Configuration                               *bemtvi-md-table-configuration*
 
 `require("bemtvi-md-table").setup(opts)` reconfigures.
 `plugin/bemtvi-md-table.lua` calls it with `{}` for you; calling it again from
@@ -135,7 +192,7 @@ a config re-applies. Unknown keys are an error.
 
 
 ==============================================================================
-5. Fill chars                                     *bemtvi-md-table-fill-chars*
+6. Fill chars                                     *bemtvi-md-table-fill-chars*
 
 The glyphs the padding is drawn in, set like the core's `'fillchars'` and
 `'listchars'`: a comma-separated `key:char` list.
@@ -170,7 +227,7 @@ fixed.
 
 
 ==============================================================================
-6. Highlights                                     *bemtvi-md-table-highlights*
+7. Highlights                                     *bemtvi-md-table-highlights*
 
 - `MdTableDelimiter` — the dashes added to the delimiter row. Linked by default to `NonText`.
 - `MdTablePad` — the spaces added to the cells. Linked by default to `NonText`.
@@ -183,7 +240,7 @@ They are re-linked after a colorscheme loads.
 
 
 ==============================================================================
-7. API                                                   *bemtvi-md-table-api*
+8. API                                                   *bemtvi-md-table-api*
 
 
 SETUP                                              *bemtvi-md-table-api-setup*
@@ -216,6 +273,24 @@ REFRESH                                          *bemtvi-md-table-api-refresh*
 Repaint `bufnr`'s windows now, or every visible window with no argument.
 
 
+SHRINK                                            *bemtvi-md-table-api-shrink*
+
+`require("bemtvi-md-table").shrink(bufnr, first, last)`
+
+What `:MdTableShrink` runs. Rewrites every table touching the 0-based rows
+`first` to `last` (inclusive) of `bufnr` (default: the current buffer, at the
+cursor). Returns a promise of the number of tables whose text changed; it
+rejects when there is no table there.
+
+
+EXPAND                                            *bemtvi-md-table-api-expand*
+
+`require("bemtvi-md-table").expand(bufnr, first, last)`
+
+What `:MdTableExpand` runs, with the same arguments and result as
+|bemtvi-md-table-shrink|.
+
+
 FILLCHARS                                      *bemtvi-md-table-api-fillchars*
 
 `require("bemtvi-md-table").fillchars(bufnr)`
@@ -227,7 +302,7 @@ setup's. An invalid variable returns `nil` and the `E474` message. See
 
 
 ==============================================================================
-8. How it works                                 *bemtvi-md-table-how-it-works*
+9. How it works                                 *bemtvi-md-table-how-it-works*
 
 A `btv.decor.provider` scoped to the configured filetypes runs whenever a
 window's viewport changes: on scroll, resize, or an edit. It declares the
@@ -245,7 +320,7 @@ each table's layout is cached until the buffer next changes (keyed on
 
 
 ==============================================================================
-9. Tests                                               *bemtvi-md-table-tests*
+10. Tests                                              *bemtvi-md-table-tests*
 
 >sh
     bemtvi --test-plugin .

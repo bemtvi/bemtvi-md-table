@@ -41,6 +41,10 @@ btv.plugins({
 
 Turn it off with `btv.g.md_table_align = false` (everywhere) or `:MdTableToggle` (this buffer).
 
+To change the text itself, `:MdTableExpand` writes the table under the cursor out as the padded
+grid, and `:MdTableShrink` writes it back in the least space it takes. Both take a range
+(`:%MdTableExpand`).
+
 ## Try it
 
 ```sh

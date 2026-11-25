@@ -97,6 +97,31 @@ btv.test.describe("examples/sample.md", function()
     end, { message = "the default fill did not come back" })
   end)
 
+  btv.test.it("8. :MdTableExpand writes the padding, :MdTableShrink takes it out", function(t)
+    local delim = open(t)
+    local typed = t:lines()
+    t:feed("/ingest<CR>")
+    t:cmd("MdTableExpand")
+    t:wait_for(function()
+      return (
+        t:lines()[find(t, "| Queue   | Upstream       | Applied by |") + 1]
+        == "|---------|----------------|------------|"
+      ) or nil
+    end, { message = "section 1 was never expanded" })
+    expect(find(t, "| ingest  | kafka://events | worker-a   |")).never.to_be_nil()
+    -- Nothing is left to pad, so no virtual padding is drawn.
+    t:wait_for(function()
+      return (pad(delim) == "") or nil
+    end, { message = "the virtual padding stayed after expanding" })
+    t:cmd("MdTableShrink")
+    t:wait_for(function()
+      return btv.tbl.deep_equal(t:lines(), typed) or nil
+    end, { message = "section 1 never shrank back to the typed text" })
+    t:wait_for(function()
+      return (pad(delim) ~= "") or nil
+    end, { message = "the virtual padding did not come back" })
+  end)
+
   btv.test.it("5. the fenced table is left alone", function(t)
     open(t)
     t:feed("Gzb")

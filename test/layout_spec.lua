@@ -136,3 +136,83 @@ btv.test.describe("layout.layout", function()
     expect(#pads[3]).to_be(0)
   end)
 end)
+
+btv.test.describe("layout.shrink", function()
+  btv.test.it("trims every cell to one space from its pipes", function()
+    expect(layout.shrink({
+      "| Queue  | Upstream       |",
+      "|--------|----------------|",
+      "|   ingest | kafka://events |",
+    })).to_equal({
+      "| Queue | Upstream |",
+      "|---|---|",
+      "| ingest | kafka://events |",
+    })
+  end)
+
+  btv.test.it("keeps each delimiter cell's alignment in three characters", function()
+    local out = layout.shrink({ "| a | b | c | d |", "| ----- | :---- | ----: | :---: |" })
+    expect(out[2]).to_be("|---|:--|--:|:-:|")
+  end)
+
+  btv.test.it("keeps a row's outer pipes, or their absence", function()
+    expect(layout.shrink({ "a   |   b", "---|---", "|  x |  y  " })).to_equal({
+      "a | b",
+      "---|---",
+      "| x | y",
+    })
+  end)
+
+  btv.test.it("writes an empty cell as one space, and keeps escaped pipes", function()
+    expect(layout.shrink({ [[|  | a \| b   |]], "|---|---|" })).to_equal({
+      [[| | a \| b |]],
+      "|---|---|",
+    })
+  end)
+end)
+
+btv.test.describe("layout.expand", function()
+  btv.test.it("pads every cell with real spaces and dashes", function()
+    expect(layout.expand({
+      "| Queue | Upstream | Applied by |",
+      "|---|---|---|",
+      "| ingest | kafka://events | worker-a |",
+    })).to_equal({
+      "| Queue  | Upstream       | Applied by |",
+      "|--------|----------------|------------|",
+      "| ingest | kafka://events | worker-a   |",
+    })
+  end)
+
+  btv.test.it("drops stray spacing before it pads", function()
+    expect(layout.expand({ "|    a |b|", "|-|-|", "| ccc | d |" })).to_equal({
+      "| a   | b |",
+      "|-----|---|",
+      "| ccc | d |",
+    })
+  end)
+
+  btv.test.it("places the padding by the column's alignment", function()
+    expect(layout.expand({ "| r | c |", "|--:|:-:|", "| xxxxx | xxxxx |" })).to_equal({
+      "|     r |   c   |",
+      "|------:|:-----:|",
+      "| xxxxx | xxxxx |",
+    })
+    expect(layout.expand({ "| r |", "|--:|", "| xxxxx |" }, { align = false })[1]).to_be(
+      "| r     |"
+    )
+  end)
+
+  btv.test.it("pads wide characters by display width", function()
+    expect(layout.expand({ "| 日本 | b |", "|---|---|", "| x | y |" })).to_equal({
+      "| 日本 | b |",
+      "|------|---|",
+      "| x    | y |",
+    })
+  end)
+
+  btv.test.it("undoes a shrink", function()
+    local grid = { "| a   | bb |", "|:----|---:|", "| ccc |  d |" }
+    expect(layout.expand(layout.shrink(grid))).to_equal(grid)
+  end)
+end)

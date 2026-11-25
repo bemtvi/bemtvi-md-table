@@ -90,6 +90,52 @@ changing one from Lua, call `require("bemtvi-md-table").refresh()` to repaint st
 
 `:MdTableToggle` flips alignment for the current buffer and repaints it.
 
+# Rewriting a table
+
+The alignment above is only drawn. Two commands change the text itself, for when the file should
+hold a grid (or should stop holding one).
+
+## :MdTableExpand
+
+`:[range]MdTableExpand` writes the table under the cursor as the aligned grid the plugin draws,
+with real spaces and dashes:
+
+```markdown
+| Queue  | Upstream       | Applied by |
+|--------|----------------|------------|
+| ingest | kafka://events | worker-a   |
+```
+
+Stray spacing in the cells is dropped first, then each cell is padded to its column's widest,
+before its text in a right-aligned column and on both sides in a centered one (with `align = false`
+in `setup`, always on the right). Once the text is a grid there is nothing left to pad, so no
+padding is drawn over it.
+
+## :MdTableShrink
+
+`:[range]MdTableShrink` writes the table in the least space it takes: each cell's text one space
+from its pipes (an empty cell is a single space), and each delimiter cell cut to three characters
+that keep its alignment, `---`, `:--`, `--:` or `:-:`, with no spaces around them:
+
+```markdown
+| Queue | Upstream | Applied by |
+|---|---|---|
+| ingest | kafka://events | worker-a |
+```
+
+Alignment, if on, keeps drawing the shrunk table as a grid.
+
+Both commands:
+
+- rewrite every table the range touches when given one (`:%MdTableExpand` does the whole buffer);
+- keep each row's outer pipes, or their absence, and never add or drop a cell;
+- keep what comes before the table on each row: a block quote's `>` and a list item's indent;
+- find tables through the markdown treesitter grammar, as the alignment does, so a table in a code
+  fence is never touched;
+- fail with an error, leaving the buffer alone, when there is no table at the cursor or in the
+  range;
+- leave an already-formatted table untouched (the buffer isn't marked modified) and say so.
+
 # Configuration
 
 `require("bemtvi-md-table").setup(opts)` reconfigures. `plugin/bemtvi-md-table.lua` calls it with
@@ -170,6 +216,20 @@ Flip alignment for `bufnr` (default: the current buffer), repaint it, and return
 `require("bemtvi-md-table").refresh(bufnr)`
 
 Repaint `bufnr`'s windows now, or every visible window with no argument.
+
+## shrink
+
+`require("bemtvi-md-table").shrink(bufnr, first, last)`
+
+What `:MdTableShrink` runs. Rewrites every table touching the 0-based rows `first` to `last`
+(inclusive) of `bufnr` (default: the current buffer, at the cursor). Returns a promise of the
+number of tables whose text changed; it rejects when there is no table there.
+
+## expand
+
+`require("bemtvi-md-table").expand(bufnr, first, last)`
+
+What `:MdTableExpand` runs, with the same arguments and result as [shrink](#shrink).
 
 ## fillchars
 

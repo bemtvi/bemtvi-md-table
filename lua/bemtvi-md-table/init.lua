@@ -247,6 +247,107 @@ function M.marks(buf, top, bot, matches, fillchars)
   return marks
 end
 
+-- ----- rewriting --------------------------------------------------------------
+
+-- Rewrite one table's lines with `transform` (`layout.shrink` / `layout.expand`).
+-- `col` is the byte column the table starts at on its first row; every row shares the
+-- prefix before it (a block quote's `> `, a list item's indent), which is kept as is.
+local function rewrite(lines, col, first, transform)
+  local prefixes, bodies = {}, {}
+  for i, line in ipairs(lines) do
+    local prefix = line:sub(1, col)
+    if #prefix < col or not prefix:find("^[%s>]*$") then
+      error(
+        ("row %d doesn't share the table's prefix (its first %d bytes): %q"):format(
+          first + i,
+          col,
+          line
+        ),
+        0
+      )
+    end
+    prefixes[i], bodies[i] = prefix, line:sub(col + 1)
+  end
+  local out = transform(bodies)
+  for i, body in ipairs(out) do
+    out[i] = prefixes[i] .. body
+  end
+  return out
+end
+
+-- Reformat every table touching the 0-based rows `[first, last]` of `buf` with
+-- `transform`. Resolves with the number of tables whose text changed; rejects when
+-- there is no table there, or no answer from the grammar.
+local function reformat(name, transform, bufnr, first, last)
+  local buf = (bufnr == nil or bufnr == 0) and btv.buf.current() or bufnr
+  local tick = btv.buf.changedtick(buf)
+  return btv.treesitter.query(buf, QUERY, { rows = { first, last + 1 } }):next(function(res)
+    if res.tick ~= tick or btv.buf.changedtick(buf) ~= tick then
+      error(name .. ": the buffer changed while its tables were being found; run it again", 0)
+    end
+    local tables = {}
+    for _, m in ipairs(res.matches) do
+      for _, node in ipairs(m.captures.table or {}) do
+        local a, b = node_rows(node)
+        tables[#tables + 1] = { first = a, last = b, col = node[2] }
+      end
+    end
+    if #tables == 0 then
+      if first == last then
+        error(name .. ": no markdown table on line " .. (first + 1), 0)
+      end
+      error(("%s: no markdown table in lines %d-%d"):format(name, first + 1, last + 1), 0)
+    end
+    -- Bottom-up, so an edit never moves the rows of a table still to come.
+    table.sort(tables, function(x, y)
+      return x.first > y.first
+    end)
+    local changed = 0
+    for _, tbl in ipairs(tables) do
+      local lines = btv.buf.lines(buf, tbl.first, tbl.last + 1)
+      local ok, out = pcall(rewrite, lines, tbl.col, tbl.first, transform)
+      if not ok then
+        error(name .. ": " .. out, 0)
+      end
+      for i = 1, #lines do
+        if lines[i] ~= out[i] then
+          btv.buf.set_lines(buf, tbl.first, tbl.last + 1, true, out)
+          changed = changed + 1
+          break
+        end
+      end
+    end
+    return changed
+  end)
+end
+
+-- `M.shrink([bufnr[, first, last]])` -> promise of the number of tables changed. Writes
+-- every table touching the 0-based rows `[first, last]` of `bufnr` (default: the
+-- current buffer, at the cursor) in the least space it takes: one space between each
+-- cell's text and its pipes, three-character delimiter cells (`---`, `:--`, `--:`,
+-- `:-:`). Rejects when there is no table there.
+function M.shrink(bufnr, first, last)
+  if first == nil then
+    first = btv.cursor.get()[1] - 1
+  end
+  return reformat("MdTableShrink", layout.shrink, bufnr, first, last or first)
+end
+
+-- `M.expand([bufnr[, first, last]])` -> promise of the number of tables changed. Writes
+-- every table touching the 0-based rows `[first, last]` of `bufnr` (default: the
+-- current buffer, at the cursor) as the aligned grid the plugin draws, with real
+-- spaces and dashes: stray spacing dropped, then each cell padded to its column's
+-- widest, by the column's alignment when `setup`'s `align` is on. Rejects when there
+-- is no table there.
+function M.expand(bufnr, first, last)
+  if first == nil then
+    first = btv.cursor.get()[1] - 1
+  end
+  return reformat("MdTableExpand", function(lines)
+    return layout.expand(lines, { align = M.config.align })
+  end, bufnr, first, last or first)
+end
+
 -- ----- setup ------------------------------------------------------------------
 
 -- The highlight groups the padding draws in, dimmed like other glyphs that aren't
@@ -336,6 +437,26 @@ function M.setup(opts)
     local on = M.toggle(0)
     btv.notify("markdown table alignment " .. (on and "on" or "off"))
   end, { desc = "Toggle markdown table alignment in this buffer" })
+
+  -- `:[range]MdTableShrink` / `:[range]MdTableExpand`: the table under the cursor, or
+  -- every table the range touches.
+  local function rewrite_command(fn)
+    return function(o)
+      fn(0, o.line1 - 1, o.line2 - 1):next(function(n)
+        if n == 0 then
+          btv.notify("markdown table already formatted")
+        end
+      end, function(err)
+        btv.notify(tostring(err), btv.log.levels.ERROR)
+      end)
+    end
+  end
+  btv.command("MdTableShrink", rewrite_command(M.shrink), {
+    desc = "Rewrite the markdown table at the cursor (or in the range) in the least space",
+  })
+  btv.command("MdTableExpand", rewrite_command(M.expand), {
+    desc = "Rewrite the markdown table at the cursor (or in the range) padded into a grid",
+  })
 
   M.refresh()
 end
