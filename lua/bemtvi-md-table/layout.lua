@@ -8,7 +8,41 @@
 
 local M = {}
 
-local width = btv.str.displaywidth
+-- A table wider than this many display cells, its columns summed, is left alone: it
+-- can't line up on any screen, and padding it would mean strings as long as its widest
+-- cell on every row.
+M.MAX_WIDTH = 1000
+
+local displaywidth = btv.str.displaywidth
+
+-- The display cells `s` takes when it starts at screen column `col` (tabs expand from
+-- there). Plain ASCII without a tab is one cell a byte, which skips the per-character
+-- walk for the common cell.
+local function width(s, col)
+  if not s:find("[\t\128-\255]") then
+    return #s
+  end
+  return displaywidth(s, col or 0)
+end
+M.width = width
+
+-- `s` without the whitespace around it. A scan rather than `^%s*(.-)%s*$`, whose lazy
+-- capture rescans a run of inner spaces at every step (quadratic on a long one).
+local function trim(s)
+  local a = s:find("%S")
+  if not a then
+    return ""
+  end
+  local b = #s
+  -- `%s`: tab, newline, vertical tab, form feed, carriage return, space. The scan
+  -- stops at `a`, a non-space, at the latest.
+  local c = s:byte(b)
+  while c == 32 or (c >= 9 and c <= 13) do
+    b = b - 1
+    c = s:byte(b)
+  end
+  return s:sub(a, b)
+end
 
 -- The byte offsets (1-based) of every unescaped `|` in `line`. A pipe preceded by an
 -- odd run of backslashes is escaped (`\|` is a literal pipe inside a cell, GFM's one
@@ -33,12 +67,15 @@ local function pipes(line)
   end
 end
 
--- `M.row(line)` -> nil | row. Splits a table row into cells. `nil` when the line has
--- no unescaped pipe (so it cannot be a row) or is blank.
+-- `M.row(line[, base])` -> nil | row. Splits a table row into cells. `nil` when the
+-- line has no unescaped pipe (so it cannot be a row) or is blank. `base` is the display
+-- column `line` starts at (default 0): the width of a block quote's `> ` or a list
+-- item's indent cut off before it, so column 1 is measured from the real line start
+-- and tabs expand from the column they sit at.
 --
 -- ```
 -- row = {
---   indent  = <leading whitespace width>,
+--   indent  = <the leading whitespace, as written>,
 --   lead    = <true when the row opens with a pipe>,
 --   cells   = { cell, ... },
 -- }
@@ -54,9 +91,10 @@ end
 -- `lead` is whether the row opens with a pipe (`| a |` as opposed to `a |`).
 --
 -- `seg` is what the columns are aligned on. For the first cell it runs from the start
--- of the line, so a leading pipe and any indentation count toward column 1, and a row
--- written with a leading pipe lines up with one written without.
-function M.row(line)
+-- of the line, `base` included, so a leading pipe and any indentation count toward
+-- column 1, and a row written with a leading pipe lines up with one written without.
+function M.row(line, base)
+  base = base or 0
   if not line:find("%S") then
     return nil
   end
@@ -64,25 +102,28 @@ function M.row(line)
   if #ps == 0 then
     return nil
   end
-  local first = line:sub(1, ps[1] - 1)
-  local leading = not first:find("%S")
-  local trailing = not line:sub(ps[#ps] + 1):find("%S")
+  local leading = line:find("%S") == ps[1]
+  local trailing = not line:find("%S", ps[#ps] + 1)
   local cells = {}
   local prev, from = 0, 1
   if leading then
     prev, from = ps[1], 2
   end
-  local seg_from = 1
+  local seg_from, col = 1, base
   for k = from, #ps do
     local p = ps[k]
+    local w = width(line:sub(seg_from, p - 1), col)
     cells[#cells + 1] =
-      { s = prev + 1, e = p - 1, close = p, seg = width(line:sub(seg_from, p - 1)) }
+      { s = prev + 1, e = p - 1, close = p, seg = w + (seg_from == 1 and base or 0) }
+    col = col + w + 1 -- the pipe
     prev, seg_from = p, p + 1
   end
   if not trailing then
-    cells[#cells + 1] = { s = prev + 1, e = #line, close = nil, seg = width(line:sub(seg_from)) }
+    local w = width(line:sub(seg_from), col)
+    cells[#cells + 1] =
+      { s = prev + 1, e = #line, close = nil, seg = w + (seg_from == 1 and base or 0) }
   end
-  return { indent = #(line:match("^%s*")), lead = leading, cells = cells }
+  return { indent = line:match("^[ \t]*"), lead = leading, cells = cells }
 end
 
 -- `M.aligns(row, line)` -> nil | { "left" | "right" | "center", ... }. The column
@@ -94,7 +135,7 @@ function M.aligns(row, line)
   end
   local out = {}
   for i, cell in ipairs(row.cells) do
-    local text = line:sub(cell.s, cell.e):match("^%s*(.-)%s*$")
+    local text = trim(line:sub(cell.s, cell.e))
     if not text:find("^:?%-+:?$") then
       return nil
     end
@@ -104,102 +145,143 @@ function M.aligns(row, line)
   return out
 end
 
--- `M.layout(lines[, opts])` -> pads. `lines` is one whole table: the header row, the
--- delimiter row, then the body rows. Returns, per line, the padding to draw in it:
---
--- ```
--- pads[i] = { { col = <0-based byte col>, text = "   ", delimiter = <bool> }, ... }
--- ```
---
--- Each column is widened to its widest cell. A cell that falls short gets the
--- difference as padding: spaces before its closing pipe (or before its text, or split
--- around it, for a right- or center-aligned column when `opts.align` is on, the
--- default), and on the delimiter row, dashes after the cell's last `-` — so `:---:`
--- stays a centered marker and the colons stay at the edges.
---
--- `opts.fillchars = { pad = " ", delimiter = "-" }` names the glyphs the padding is
--- drawn in (those are the defaults here); each must be one display cell wide, since a
--- pad's width is its glyph count.
---
--- An open last cell (a row with no trailing pipe) still counts toward its column's
--- width but is never padded: nothing follows it to line up.
-function M.layout(lines, opts)
-  local align = not (opts and opts.align == false)
-  local chars = opts and opts.fillchars or {}
-  local pad_char, dash_char = chars.pad or " ", chars.delimiter or "-"
-  local rows = {}
-  for i, line in ipairs(lines) do
-    rows[i] = M.row(line) or { indent = 0, cells = {} }
-  end
-  local aligns = M.aligns(rows[2], lines[2]) or {}
+local NO_ROW = { indent = "", cells = {} }
 
-  local widths = {}
-  for _, row in ipairs(rows) do
+-- `M.measure(lines[, opts])` -> measured. Parses one whole table (the header row, the
+-- delimiter row, then the body rows) and works out its column widths:
+--
+-- ```
+-- measured = {
+--   lines  = lines,
+--   rows   = { row, ... },     -- `M.row` of each line (an empty row for a non-row)
+--   widths = { <display cells>, ... },  -- each column's widest `seg`
+--   aligns = { "left" | "right" | "center", ... },  -- from the delimiter row
+--   wide   = <true when the widths add up past `M.MAX_WIDTH`>,
+-- }
+-- ```
+--
+-- `opts.base[i]` is the display column line `i` starts at (see `M.row`). `opts.row`,
+-- when given, stands in for `M.row` (a caller memoizing rows across edits).
+function M.measure(lines, opts)
+  local base = opts and opts.base or {}
+  local parse = opts and opts.row or M.row
+  local rows, widths = {}, {}
+  for i, line in ipairs(lines) do
+    local row = parse(line, base[i] or 0) or NO_ROW
+    rows[i] = row
     for j, cell in ipairs(row.cells) do
       if cell.seg > (widths[j] or 0) then
         widths[j] = cell.seg
       end
     end
   end
+  local total = 0
+  for _, w in ipairs(widths) do
+    total = total + w
+  end
+  return {
+    lines = lines,
+    rows = rows,
+    widths = widths,
+    aligns = M.aligns(rows[2], lines[2] or "") or {},
+    wide = total > M.MAX_WIDTH,
+  }
+end
 
-  local pads = {}
-  for i, row in ipairs(rows) do
-    local out = {}
-    for j, cell in ipairs(row.cells) do
-      local pad = widths[j] - cell.seg
-      if pad > 0 and cell.close then
-        if i == 2 then
-          -- The last `-` of the delimiter cell; the dashes go right after it.
-          local last = cell.s - 1
-          for b = cell.e, cell.s, -1 do
-            if lines[i]:byte(b) == 45 then -- `-`
-              last = b
-              break
-            end
+-- `M.row_pads(measured, i[, opts])` -> the padding line `i` of a measured table needs,
+-- in ascending column order:
+--
+-- ```
+-- { { col = <0-based byte col>, n = <display cells>, delimiter = <bool> }, ... }
+-- ```
+--
+-- A cell that falls short of its column gets the difference: before its closing pipe
+-- (or before its text, or split around it, for a right- or center-aligned column when
+-- `opts.align` is on, the default), and on the delimiter row (line 2) after the cell's
+-- last `-`, so `:---:` stays a centered marker and the colons stay at the edges. An
+-- open last cell (no trailing pipe) is never padded: nothing follows it to line up.
+-- Nothing is padded in a table too wide to align (`measured.wide`).
+function M.row_pads(measured, i, opts)
+  local out = {}
+  if measured.wide then
+    return out
+  end
+  local align = not (opts and opts.align == false)
+  local line, widths, aligns = measured.lines[i], measured.widths, measured.aligns
+  for j, cell in ipairs(measured.rows[i].cells) do
+    local pad = widths[j] - cell.seg
+    if pad > 0 and cell.close then
+      if i == 2 then
+        -- The last `-` of the delimiter cell; the dashes go right after it.
+        local last = cell.s - 1
+        for b = cell.e, cell.s, -1 do
+          if line:byte(b) == 45 then -- `-`
+            last = b
+            break
           end
-          out[#out + 1] = { col = last, text = dash_char:rep(pad), delimiter = true }
-        else
-          local how = align and aligns[j] or "left"
-          local before = (how == "right" and pad) or (how == "center" and math.floor(pad / 2)) or 0
-          if before > 0 then
-            out[#out + 1] = { col = cell.s - 1, text = pad_char:rep(before) }
-          end
-          if pad - before > 0 then
-            out[#out + 1] = { col = cell.close - 1, text = pad_char:rep(pad - before) }
-          end
+        end
+        out[#out + 1] = { col = last, n = pad, delimiter = true }
+      else
+        local how = align and aligns[j] or "left"
+        local before = (how == "right" and pad) or (how == "center" and math.floor(pad / 2)) or 0
+        if before > 0 then
+          out[#out + 1] = { col = cell.s - 1, n = before }
+        end
+        if pad - before > 0 then
+          out[#out + 1] = { col = cell.close - 1, n = pad - before }
         end
       end
     end
-    pads[i] = out
   end
-  return pads
+  return out
 end
 
--- Strip the whitespace around a cell's text.
-local function trim(s)
-  return s:match("^%s*(.-)%s*$")
+-- `M.layout(lines[, opts])` -> pads. Every line's padding as text, for the whole
+-- table at once (`M.measure` + `M.row_pads`):
+--
+-- ```
+-- pads[i] = { { col = <0-based byte col>, text = "   ", delimiter = <bool> }, ... }
+-- ```
+--
+-- `opts.fillchars = { pad = " ", delimiter = "-" }` names the glyphs the padding is
+-- drawn in (those are the defaults here); each must be one display cell wide, since a
+-- pad's width is its glyph count. `opts.align` and `opts.base` are as for
+-- `M.row_pads` and `M.measure`.
+function M.layout(lines, opts)
+  local chars = opts and opts.fillchars or {}
+  local pad_char, dash_char = chars.pad or " ", chars.delimiter or "-"
+  local measured = M.measure(lines, opts)
+  local pads = {}
+  for i = 1, #lines do
+    local row = M.row_pads(measured, i, opts)
+    for _, pad in ipairs(row) do
+      pad.text = (pad.delimiter and dash_char or pad_char):rep(pad.n)
+    end
+    pads[i] = row
+  end
+  return pads
 end
 
 -- `M.shrink(lines)` -> lines. The table written in the least space it takes: each
 -- cell's text trimmed and set off from its pipes by one space (an empty cell is one
 -- space), and each delimiter cell cut to three characters that keep its alignment,
 -- with no spaces around them (`|---|:--|--:|:-:|`), so a one-character column needs
--- no padding. A row keeps its outer pipes, or their absence, and no
--- cell is added or dropped. `lines` is one whole table, as for `M.layout`, starting
--- at the table's first column (no block quote or list prefix).
+-- no padding. A row keeps its leading whitespace and its outer pipes, or their
+-- absence, and no cell is added or dropped. `lines` is one whole table, as for
+-- `M.layout`, starting at the table's first column (no block quote or list prefix).
 function M.shrink(lines)
   local rows = {}
   for i, line in ipairs(lines) do
     rows[i] = M.row(line)
   end
-  local delimiter = M.aligns(rows[2], lines[2]) ~= nil
+  local delimiter = M.aligns(rows[2], lines[2] or "") ~= nil
   local out = {}
   for i, line in ipairs(lines) do
     local row = rows[i]
     if not row then
       out[i] = line
     else
-      local parts = { row.lead and "|" or "" }
+      local parts = { row.indent, row.lead and "|" or "" }
       for j, cell in ipairs(row.cells) do
         local text = trim(line:sub(cell.s, cell.e))
         if i == 2 and delimiter then
@@ -224,26 +306,28 @@ function M.shrink(lines)
   return out
 end
 
--- `M.expand(lines[, opts])` -> lines. The table written out as the aligned grid the
--- plugin draws, with real spaces and dashes: shrunk first (`M.shrink`), so stray
--- spacing is dropped, then every cell padded to its column's widest. `opts.align`
--- (default true) places the padding by the delimiter row's colons, as in `M.layout`.
+-- `M.expand(lines[, opts])` -> lines | nil, reason. The table written out as the
+-- aligned grid the plugin draws, with real spaces and dashes: shrunk first
+-- (`M.shrink`), so stray spacing is dropped, then every cell padded to its column's
+-- widest. `opts.align` (default true) places the padding by the delimiter row's
+-- colons, and `opts.base` gives each line's starting column, as for `M.measure`.
+-- `nil` and the reason for a table too wide to align (see `M.MAX_WIDTH`).
 function M.expand(lines, opts)
   local shrunk = M.shrink(lines)
-  local pads = M.layout(shrunk, {
-    align = not (opts and opts.align == false),
-    fillchars = { pad = " ", delimiter = "-" },
-  })
+  local measured = M.measure(shrunk, { base = opts and opts.base })
+  if measured.wide then
+    return nil, ("the table is wider than %d display cells"):format(M.MAX_WIDTH)
+  end
   local out = {}
   for i, line in ipairs(shrunk) do
-    local row = pads[i]
-    table.sort(row, function(a, b)
-      return a.col > b.col
-    end)
-    for _, pad in ipairs(row) do
-      line = line:sub(1, pad.col) .. pad.text .. line:sub(pad.col + 1)
+    local parts, pos = {}, 0
+    for _, pad in ipairs(M.row_pads(measured, i, opts)) do
+      parts[#parts + 1] = line:sub(pos + 1, pad.col)
+      parts[#parts + 1] = (pad.delimiter and "-" or " "):rep(pad.n)
+      pos = pad.col
     end
-    out[i] = line
+    parts[#parts + 1] = line:sub(pos + 1)
+    out[i] = table.concat(parts)
   end
   return out
 end

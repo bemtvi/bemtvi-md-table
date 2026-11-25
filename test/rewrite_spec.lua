@@ -100,6 +100,54 @@ btv.test.describe("MdTableShrink / MdTableExpand", function()
     expect(t:lines()[5]).to_be("  | ccc | d |")
   end)
 
+  btv.test.it("rewrites a block-quoted table with more of the quote after it", function(t)
+    open(t, { "> | a | b |", "> |---|--:|", "> | ccc | d |", ">", "> after" })
+    t:feed("2G")
+    t:cmd("MdTableExpand")
+    wait_line(t, 2, "> |-----|--:|")
+    expect(t:lines()).to_equal({
+      "> | a   | b |",
+      "> |-----|--:|",
+      "> | ccc | d |",
+      ">",
+      "> after",
+    })
+  end)
+
+  btv.test.it("rewrites a table that starts on a list marker's line", function(t)
+    open(t, { "- | a | b |", "  |---|---|", "  | ccc | d |" })
+    t:cmd("MdTableExpand")
+    wait_line(t, 2, "  |-----|---|")
+    expect(t:lines()).to_equal({ "- | a   | b |", "  |-----|---|", "  | ccc | d |" })
+  end)
+
+  btv.test.it("changes nothing when one table of a range can't be rewritten", function(t)
+    local doc = {
+      "| " .. ("w"):rep(1200) .. " | b |",
+      "|---|---|",
+      "",
+      "| a | b |",
+      "|---|---|",
+      "| ccc | d |",
+    }
+    open(t, doc)
+    local ok, err = pcall(btv.await, md.expand(0, 0, 5))
+    expect(ok).to_be(false)
+    expect(tostring(err)).to_match("wider than 1000")
+    t:sleep(100)
+    expect(t:lines()).to_equal(doc)
+    expect(btv.bo.modified).to_be(false)
+  end)
+
+  btv.test.it("needs the rows to rewrite in another buffer", function(t)
+    open(t, TWO_TABLES)
+    local other = btv.buf.current()
+    t:cmd("enew")
+    local ok, err = pcall(md.expand, other)
+    expect(ok).to_be(false)
+    expect(tostring(err)).to_match("give the rows")
+  end)
+
   btv.test.it("fails loud off a table, leaving the buffer alone", function(t)
     open(t, TWO_TABLES)
     t:feed("5G")

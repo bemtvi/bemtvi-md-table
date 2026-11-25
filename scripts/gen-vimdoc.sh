@@ -28,12 +28,23 @@ CACHE="$ROOT/.panvimdoc"
 
 command -v pandoc >/dev/null 2>&1 || { echo "error: pandoc (>= 3) is required" >&2; exit 1; }
 
-# Fetch/pin panvimdoc into the cache on first run.
-if [ ! -e "$CACHE/panvimdoc.sh" ]; then
+# Fetch/pin panvimdoc into the cache. The cache is used only when it is checked out
+# at exactly the pinned commit: one left at another revision (a pin bump, or a fetch
+# that cloned but failed to check out) is fetched again rather than run. A fetch is
+# assembled in a temporary directory and moved into place only once verified.
+cached_ref() { git -C "$CACHE" rev-parse HEAD 2>/dev/null || true; }
+if [ "$(cached_ref)" != "$PANVIMDOC_REF" ] || [ ! -e "$CACHE/panvimdoc.sh" ]; then
   echo "fetching panvimdoc @ ${PANVIMDOC_REF} into .panvimdoc/ ..."
+  TMP="$(mktemp -d "$ROOT/.panvimdoc.tmp.XXXXXX")"
+  trap 'rm -rf "$TMP"' EXIT
+  git clone --quiet https://github.com/kdheepak/panvimdoc.git "$TMP/panvimdoc"
+  git -C "$TMP/panvimdoc" checkout --quiet "$PANVIMDOC_REF"
+  if [ "$(git -C "$TMP/panvimdoc" rev-parse HEAD)" != "$PANVIMDOC_REF" ]; then
+    echo "error: panvimdoc did not check out at ${PANVIMDOC_REF}" >&2
+    exit 1
+  fi
   rm -rf "$CACHE"
-  git clone --quiet https://github.com/kdheepak/panvimdoc.git "$CACHE"
-  git -C "$CACHE" checkout --quiet "$PANVIMDOC_REF"
+  mv "$TMP/panvimdoc" "$CACHE"
 fi
 
 echo "generating $OUTPUT from $INPUT ..."

@@ -216,3 +216,50 @@ btv.test.describe("layout.expand", function()
     expect(layout.expand(layout.shrink(grid))).to_equal(grid)
   end)
 end)
+
+btv.test.describe("layout: hostile input stays fast", function()
+  local function timed(fn)
+    local t0 = os.clock()
+    local out = fn()
+    return out, os.clock() - t0
+  end
+
+  btv.test.it("trims a cell with a long run of inner spaces in linear time", function()
+    local line = "| a" .. (" "):rep(40000) .. "b |"
+    local out, secs = timed(function()
+      return layout.shrink({ line, "|---|" })
+    end)
+    expect(out[1]).to_be("| a" .. (" "):rep(40000) .. "b |")
+    expect(secs < 0.5).to_be(true)
+  end)
+
+  btv.test.it("refuses to expand a table wider than MAX_WIDTH", function()
+    local out, why = layout.expand({ "| " .. ("w"):rep(1200) .. " |", "|---|" })
+    expect(out).to_be_nil()
+    expect(why).to_match("wider than 1000")
+  end)
+
+  btv.test.it("pads nothing in a table wider than MAX_WIDTH", function()
+    local pads = layout.layout({ "| " .. ("w"):rep(1200) .. " |", "|---|", "| a |" })
+    expect(#pads[2]).to_be(0)
+    expect(#pads[3]).to_be(0)
+  end)
+end)
+
+btv.test.describe("layout: columns", function()
+  btv.test.it("starts column 1 at the given base column", function()
+    expect(layout.row("| a |", 2).cells[1].seg).to_be(6)
+  end)
+
+  btv.test.it("measures a tab in a later cell from its screen column", function()
+    -- " abc<Tab>d " starts at column 5: four cells to 9, the tab to 16, then two.
+    expect(layout.row("| x | abc\td |").cells[2].seg).to_be(13)
+  end)
+
+  btv.test.it("keeps a row's leading whitespace when shrinking", function()
+    expect(layout.shrink({ "   |  a | b |", "   |---|---|" })).to_equal({
+      "   | a | b |",
+      "   |---|---|",
+    })
+  end)
+end)

@@ -59,8 +59,8 @@ M.config =
 -- not on every repaint.
 M._fill_errors = {}
 
--- Per-buffer layouts, valid for one `changedtick` and one set of fill chars:
---   `{ tick, fill, tables = { [first_row] = { first, last, pads } } }`
+-- Per-buffer measurements, valid for one `changedtick`, dropped when the buffer is:
+--   `{ tick, tables = { [first_row] = { first, last, col, measured } }, rows, prev_rows }`
 M._cache = {}
 
 -- The query the provider asks the parse tree.
@@ -186,61 +186,118 @@ end
 
 -- ----- analysis ---------------------------------------------------------------
 
--- The cache entry for `buf`, reset when the buffer or the fill chars have changed
--- since it was built.
-local function cache_for(buf, fill)
+-- The cache entry for `buf`, rebuilt when its text changes. Parsed rows carry over
+-- from the entry before (keyed by their text and starting column), so an edit
+-- re-parses only the lines it changed; a row neither entry saw is dropped with it.
+local function cache_for(buf)
   local tick = btv.buf.changedtick(buf)
-  local key = fill.pad .. "\0" .. fill.delimiter
   local c = M._cache[buf]
-  if not c or c.tick ~= tick or c.fill ~= key then
-    c = { tick = tick, fill = key, tables = {} }
+  if not c or c.tick ~= tick then
+    c = { tick = tick, tables = {}, rows = {}, prev_rows = c and c.rows or {} }
     M._cache[buf] = c
   end
   return c
 end
 
--- The rows (0-based, inclusive) a captured node covers. A node ending at column 0
--- stops before that row: it ends with the previous line's newline.
-local function node_rows(node)
-  local last = node[3]
-  if node[4] == 0 and last > node[1] then
-    last = last - 1
+-- A `layout.row` for the rows of `c`'s buffer, memoized as `cache_for` describes.
+local function row_parser(c)
+  return function(line, base)
+    local key = base .. "\0" .. line
+    local row = c.rows[key]
+    if row == nil then
+      row = c.prev_rows[key]
+      if row == nil then
+        row = layout.row(line, base) or false
+      end
+      c.rows[key] = row
+    end
+    return row or nil
   end
-  return node[1], last
+end
+
+-- Whether `prefix`, what comes before the table's start column on row `i` (1-based),
+-- is the kind of thing that can: whitespace and block-quote `>`s, and on the first row
+-- also the list marker the table follows (`- | a |`, `1. | a |`).
+local function prefix_ok(prefix, i)
+  if prefix:find("^[%s>]*$") then
+    return true
+  end
+  return i == 1
+    and (prefix:find("^[%s>]*[-+*][ \t]+$") or prefix:find("^[%s>]*%d+[.)][ \t]+$")) ~= nil
+end
+
+-- The rows (0-based, inclusive) a captured node covers. A node can end at the start
+-- of the line after its last row: at column 0, or inside the next row's block-quote
+-- `>`s. That row isn't part of the table.
+local function node_rows(buf, node)
+  local first, last = node[1], node[3]
+  if last > first then
+    local text = btv.buf.lines(buf, last, last + 1)[1]
+    if node[4] == 0 or not text or text:sub(1, node[4]):find("^[%s>]*$") then
+      last = last - 1
+    end
+  end
+  return first, last
+end
+
+-- The tables a query answered, as `{ first, last, col }`: rows (0-based, inclusive)
+-- and the byte column the table starts at.
+local function tables_of(buf, matches)
+  local out = {}
+  for _, m in ipairs(matches) do
+    for _, node in ipairs(m.captures.table or {}) do
+      local first, last = node_rows(buf, node)
+      out[#out + 1] = { first = first, last = last, col = node[2] }
+    end
+  end
+  return out
+end
+
+-- Measure one table of `buf` for drawing. Each row is laid out from the table's start
+-- column, the prefix before it counted by its width; a row whose prefix isn't one
+-- (see `prefix_ok`) is left out of the alignment rather than misread.
+local function measure_table(buf, c, tbl)
+  local lines = btv.buf.lines(buf, tbl.first, tbl.last + 1)
+  local bodies, base = {}, {}
+  for i, line in ipairs(lines) do
+    local prefix = line:sub(1, tbl.col)
+    if #prefix == tbl.col and prefix_ok(prefix, i) then
+      bodies[i], base[i] = line:sub(tbl.col + 1), layout.width(prefix)
+    else
+      bodies[i], base[i] = "", 0
+    end
+  end
+  return layout.measure(bodies, { base = base, row = row_parser(c) })
 end
 
 -- `M.marks(buf, top, bot, matches[, fillchars])` -> the marks that align every table
 -- touching rows `[top, bot]` of `buf`. `matches` is `ctx.query.matches` for
 -- `(pipe_table) @table`: each table node with its full extent, even where it runs past
 -- the viewport. `fillchars` defaults to setup's.
+--
+-- A table is measured whole, once per change to the buffer (and then only the rows
+-- that changed are parsed again); its padding is built for the visible rows only.
 function M.marks(buf, top, bot, matches, fillchars)
   fillchars = fillchars or M.config.fillchars
-  local c = cache_for(buf, fillchars)
+  local c = cache_for(buf)
+  local opts = { align = M.config.align }
   local marks = {}
-  for _, m in ipairs(matches) do
-    for _, node in ipairs(m.captures.table or {}) do
-      local first, last = node_rows(node)
-      local tbl = c.tables[first]
-      if not tbl or tbl.last ~= last then
-        tbl = {
-          first = first,
-          last = last,
-          pads = layout.layout(
-            btv.buf.lines(buf, first, last + 1),
-            { align = M.config.align, fillchars = fillchars }
-          ),
+  for _, t in ipairs(tables_of(buf, matches)) do
+    local tbl = c.tables[t.first]
+    if not tbl or tbl.last ~= t.last or tbl.col ~= t.col then
+      tbl = t
+      tbl.measured = measure_table(buf, c, t)
+      c.tables[t.first] = tbl
+    end
+    for row = math.max(top, tbl.first), math.min(bot, tbl.last) do
+      for _, pad in ipairs(layout.row_pads(tbl.measured, row - tbl.first + 1, opts)) do
+        local text = (pad.delimiter and fillchars.delimiter or fillchars.pad):rep(pad.n)
+        marks[#marks + 1] = {
+          row,
+          tbl.col + pad.col,
+          virt_text = { { text, pad.delimiter and "MdTableDelimiter" or "MdTablePad" } },
+          virt_text_pos = "inline",
         }
-        c.tables[first] = tbl
-      end
-      for row = math.max(top, first), math.min(bot, last) do
-        for _, pad in ipairs(tbl.pads[row - first + 1]) do
-          marks[#marks + 1] = {
-            row,
-            pad.col,
-            virt_text = { { pad.text, pad.delimiter and "MdTableDelimiter" or "MdTablePad" } },
-            virt_text_pos = "inline",
-          }
-        end
       end
     end
   end
@@ -249,14 +306,16 @@ end
 
 -- ----- rewriting --------------------------------------------------------------
 
--- Rewrite one table's lines with `transform` (`layout.shrink` / `layout.expand`).
--- `col` is the byte column the table starts at on its first row; every row shares the
--- prefix before it (a block quote's `> `, a list item's indent), which is kept as is.
+-- Rewrite one table's lines with `transform(bodies, base)` (`layout.shrink` /
+-- `layout.expand`), which returns the new bodies or nil and a reason. `col` is the
+-- byte column the table starts at on its first row; every row keeps what's before
+-- that column (a block quote's `> `, a list item's indent or marker), which must be
+-- one (see `prefix_ok`). Returns the new lines, or raises naming the row it can't.
 local function rewrite(lines, col, first, transform)
-  local prefixes, bodies = {}, {}
+  local prefixes, bodies, base = {}, {}, {}
   for i, line in ipairs(lines) do
     local prefix = line:sub(1, col)
-    if #prefix < col or not prefix:find("^[%s>]*$") then
+    if #prefix < col or not prefix_ok(prefix, i) then
       error(
         ("row %d doesn't share the table's prefix (its first %d bytes): %q"):format(
           first + i,
@@ -266,9 +325,12 @@ local function rewrite(lines, col, first, transform)
         0
       )
     end
-    prefixes[i], bodies[i] = prefix, line:sub(col + 1)
+    prefixes[i], bodies[i], base[i] = prefix, line:sub(col + 1), layout.width(prefix)
   end
-  local out = transform(bodies)
+  local out, why = transform(bodies, base)
+  if not out then
+    error(("the table on line %d: %s"):format(first + 1, why), 0)
+  end
   for i, body in ipairs(out) do
     out[i] = prefixes[i] .. body
   end
@@ -277,21 +339,15 @@ end
 
 -- Reformat every table touching the 0-based rows `[first, last]` of `buf` with
 -- `transform`. Resolves with the number of tables whose text changed; rejects when
--- there is no table there, or no answer from the grammar.
-local function reformat(name, transform, bufnr, first, last)
-  local buf = (bufnr == nil or bufnr == 0) and btv.buf.current() or bufnr
+-- there is no table there, or no answer from the grammar. All or nothing: every table
+-- is rewritten before any edit is made, so one that can't be leaves the buffer alone.
+local function reformat(name, transform, buf, first, last)
   local tick = btv.buf.changedtick(buf)
   return btv.treesitter.query(buf, QUERY, { rows = { first, last + 1 } }):next(function(res)
     if res.tick ~= tick or btv.buf.changedtick(buf) ~= tick then
       error(name .. ": the buffer changed while its tables were being found; run it again", 0)
     end
-    local tables = {}
-    for _, m in ipairs(res.matches) do
-      for _, node in ipairs(m.captures.table or {}) do
-        local a, b = node_rows(node)
-        tables[#tables + 1] = { first = a, last = b, col = node[2] }
-      end
-    end
+    local tables = tables_of(buf, res.matches)
     if #tables == 0 then
       if first == last then
         error(name .. ": no markdown table on line " .. (first + 1), 0)
@@ -302,7 +358,7 @@ local function reformat(name, transform, bufnr, first, last)
     table.sort(tables, function(x, y)
       return x.first > y.first
     end)
-    local changed = 0
+    local edits = {}
     for _, tbl in ipairs(tables) do
       local lines = btv.buf.lines(buf, tbl.first, tbl.last + 1)
       local ok, out = pcall(rewrite, lines, tbl.col, tbl.first, transform)
@@ -311,14 +367,30 @@ local function reformat(name, transform, bufnr, first, last)
       end
       for i = 1, #lines do
         if lines[i] ~= out[i] then
-          btv.buf.set_lines(buf, tbl.first, tbl.last + 1, true, out)
-          changed = changed + 1
+          edits[#edits + 1] = { tbl.first, tbl.last + 1, out }
           break
         end
       end
     end
-    return changed
+    for _, e in ipairs(edits) do
+      btv.buf.set_lines(buf, e[1], e[2], true, e[3])
+    end
+    return #edits
   end)
+end
+
+-- The buffer and rows a `shrink` / `expand` call names: `bufnr` (default the current
+-- buffer) and rows `first`..`last`, which default to the cursor's row in the current
+-- buffer. Another buffer has no cursor to default to, so it needs `first`.
+local function target(name, bufnr, first, last)
+  local buf = (bufnr == nil or bufnr == 0) and btv.buf.current() or bufnr
+  if first == nil then
+    if buf ~= btv.buf.current() then
+      error(name .. ": give the rows to rewrite in a buffer other than the current one", 3)
+    end
+    first = btv.cursor.get()[1] - 1
+  end
+  return buf, first, last or first
 end
 
 -- `M.shrink([bufnr[, first, last]])` -> promise of the number of tables changed. Writes
@@ -327,10 +399,8 @@ end
 -- cell's text and its pipes, three-character delimiter cells (`---`, `:--`, `--:`,
 -- `:-:`). Rejects when there is no table there.
 function M.shrink(bufnr, first, last)
-  if first == nil then
-    first = btv.cursor.get()[1] - 1
-  end
-  return reformat("MdTableShrink", layout.shrink, bufnr, first, last or first)
+  local buf, a, b = target("MdTableShrink", bufnr, first, last)
+  return reformat("MdTableShrink", layout.shrink, buf, a, b)
 end
 
 -- `M.expand([bufnr[, first, last]])` -> promise of the number of tables changed. Writes
@@ -338,14 +408,12 @@ end
 -- current buffer, at the cursor) as the aligned grid the plugin draws, with real
 -- spaces and dashes: stray spacing dropped, then each cell padded to its column's
 -- widest, by the column's alignment when `setup`'s `align` is on. Rejects when there
--- is no table there.
+-- is no table there, or a table is too wide to align.
 function M.expand(bufnr, first, last)
-  if first == nil then
-    first = btv.cursor.get()[1] - 1
-  end
-  return reformat("MdTableExpand", function(lines)
-    return layout.expand(lines, { align = M.config.align })
-  end, bufnr, first, last or first)
+  local buf, a, b = target("MdTableExpand", bufnr, first, last)
+  return reformat("MdTableExpand", function(bodies, base)
+    return layout.expand(bodies, { align = M.config.align, base = base })
+  end, buf, a, b)
 end
 
 -- ----- setup ------------------------------------------------------------------
@@ -400,7 +468,12 @@ function M.setup(opts)
   M._cache = {}
 
   define_highlights()
-  btv.on("ColorScheme", { group = btv.augroup.create("bemtvi-md-table") }, define_highlights)
+  local group = btv.augroup.create("bemtvi-md-table")
+  btv.on("ColorScheme", { group = group }, define_highlights)
+  btv.on("BufDelete", { group = group }, function(ev)
+    M._cache[ev.buf] = nil
+    M._fill_errors[ev.buf] = nil
+  end)
 
   btv.decor.provider({
     name = PROVIDER,

@@ -211,6 +211,78 @@ btv.test.describe("bemtvi-md-table", function()
     expect(painted(t, 7)).to_be("> |---|--------|")
   end)
 
+  btv.test.it("honors column alignment in a block quote", function(t)
+    md.setup({ fillchars = "pad:." })
+    open(t, { "> | a | bbbb |", "> |---|---:|", "> | ccc | d |" })
+    wait_aligned(t, 1, 3)
+    expect(painted(t, 3)).to_be("> | ccc |... d |")
+  end)
+
+  btv.test.it("lines up a block-quoted row written without outer pipes", function(t)
+    md.setup({ fillchars = "pad:." })
+    open(t, { "> | a | b |", "> |---|---|", "> more | text" })
+    -- `> more |` closes column 1 at screen column 7, as `> | a .|` does.
+    t:wait_for(function()
+      return (painted(t, 2) == "> |----|-----|") or nil
+    end, { message = "the delimiter row never lined up with the open row" })
+    expect(painted(t, 1)).to_be("> | a .| b ..|")
+  end)
+
+  btv.test.it("lines up a table that starts on a list marker's line", function(t)
+    md.setup({ fillchars = "pad:." })
+    open(t, { "- | a | b |", "  |---|---|", "  | ccc | d |" })
+    wait_aligned(t, 1, 3)
+    expect(painted(t, 1)).to_be("- | a ..| b |")
+    expect(painted(t, 2)).to_be("  |-----|---|")
+  end)
+
+  btv.test.it("measures a tab from the column it sits at", function(t)
+    md.setup({ fillchars = "pad:." })
+    -- " abc<Tab>d " starts at screen column 5, so the tab runs to 16: 13 cells.
+    open(t, { "| x | abc\td |", "|---|---|" })
+    t:wait_for(function()
+      return (painted(t, 2) == "|---|-------------|") or nil
+    end, { message = "the delimiter row was not padded to the tab's width" })
+  end)
+
+  btv.test.it("leaves a table too wide for any screen unaligned", function(t)
+    open(t, { "| " .. ("w"):rep(1200) .. " | b |", "|---|---|", "| a | b |" })
+    t:sleep(300)
+    expect(#inline(2)).to_be(0)
+    expect(#inline(3)).to_be(0)
+  end)
+
+  btv.test.it("re-parses only the edited row of a big table", function(t)
+    local doc = { "| k | v |", "|---|---|" }
+    for i = 1, 2000 do
+      doc[#doc + 1] = ("| %d | x |"):format(i)
+    end
+    open(t, doc)
+    wait_aligned(t, 1, 3)
+    local layout = require("bemtvi-md-table.layout")
+    local real, parsed = layout.row, 0
+    layout.row = function(...)
+      parsed = parsed + 1
+      return real(...)
+    end
+    t:feed("3GA!<Esc>")
+    t:wait_for(function()
+      return (painted(t, 3):find("!", 1, true) and parsed > 0) or nil
+    end, { message = "the edit was never laid out" })
+    layout.row = real
+    expect(parsed <= 2).to_be(true)
+  end)
+
+  btv.test.it("forgets a buffer's layout when the buffer is deleted", function(t)
+    open(t, USER_TABLE)
+    wait_aligned(t, 3, 5)
+    local buf = btv.buf.current()
+    expect(md._cache[buf]).never.to_be_nil()
+    t:cmd("enew")
+    t:cmd("bwipeout! " .. buf)
+    expect(md._cache[buf]).to_be_nil()
+  end)
+
   btv.test.it("draws nothing where treesitter is off", function(t)
     open(t, USER_TABLE)
     wait_aligned(t, 3, 5)

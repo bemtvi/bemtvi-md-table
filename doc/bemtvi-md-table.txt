@@ -87,8 +87,11 @@ gets the difference as padding:
 - on the delimiter row, dashes after the cell's last `-`, so alignment colons stay at the edges.
 
 Rows with and without outer pipes line up with each other, since column 1 is
-measured from the start of the line. A `\|` is a literal pipe, not a cell
-boundary.
+measured from the start of the line. That includes what comes before the table
+on each row: a block quote's `>`, a list item's indent, or the list marker
+a table starts right after (`- | a | b |`). A `\|` is a literal pipe, not a
+cell boundary. A tab counts from the screen column it sits at, on a tabstop of
+8 (the editor's display-width measure doesn't read `'tabstop'` yet).
 
 Left alone, because the grammar doesn't call them tables:
 
@@ -101,6 +104,10 @@ alignment either.
 
 The last cell of a row with no trailing pipe counts toward its column's width
 but is not padded, because nothing after it needs lining up.
+
+A table whose columns add up to more than 1000 display cells is left unaligned:
+it can't line up on any screen, and padding it would mean a string as long as
+its widest cell on every row.
 
 
 ==============================================================================
@@ -169,9 +176,14 @@ Both commands:
 - keep what comes before the table on each row: a block quote's `>` and a list item's indent;
 - find tables through the markdown treesitter grammar, as the alignment does, so a table in a code
     fence is never touched;
+- keep each row's leading whitespace;
 - fail with an error, leaving the buffer alone, when there is no table at the cursor or in the
-    range;
+    range, or when a table in it can't be rewritten (`:MdTableExpand` refuses one wider than 1000
+    display cells). It's all or nothing: when one table of a range fails, none is changed;
 - leave an already-formatted table untouched (the buffer isn't marked modified) and say so.
+
+Each table a range rewrites is its own edit, so it takes one `u` per table to
+undo the command.
 
 
 ==============================================================================
@@ -279,8 +291,9 @@ SHRINK                                            *bemtvi-md-table-api-shrink*
 
 What `:MdTableShrink` runs. Rewrites every table touching the 0-based rows
 `first` to `last` (inclusive) of `bufnr` (default: the current buffer, at the
-cursor). Returns a promise of the number of tables whose text changed; it
-rejects when there is no table there.
+cursor). Another buffer has no cursor to default to, so it needs `first`.
+Returns a promise of the number of tables whose text changed; it rejects when
+there is no table there.
 
 
 EXPAND                                            *bemtvi-md-table-api-expand*
@@ -314,9 +327,12 @@ replaces the previous one, so nothing is left behind when a cell shrinks. While
 the grammar is still loading, or a large file's first parse is unfinished, it
 keeps what is drawn and runs again when the tree is ready.
 
-The work is bounded by what is visible. Only tables on screen are measured, and
-each table's layout is cached until the buffer next changes (keyed on
-`btv.buf.changedtick`).
+Only tables on screen are measured, and each table's column widths are cached
+until the buffer next changes (keyed on `btv.buf.changedtick`). Parsed rows
+outlive that: they're kept by their text, so after an edit only the rows that
+changed are parsed again, and measuring a table is one pass over its rows. The
+padding itself is built for the visible rows only. The cache is dropped when
+the buffer is deleted.
 
 
 ==============================================================================
