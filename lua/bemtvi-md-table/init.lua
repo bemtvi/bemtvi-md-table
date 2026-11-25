@@ -200,12 +200,18 @@ local function cache_for(buf, tabstop)
     c = { tick = tick, tabstop = tabstop, tables = {}, prev = {}, clock = 0 }
     M._cache[buf] = c
   elseif c.tick ~= tick then
+    -- Only what a later measure can reuse: a table measured whole, or one found too big
+    -- with the rows it was read from (see `too_big`).
     for first, tbl in pairs(c.tables) do
-      c.prev[first] = tbl
+      if tbl.complete or tbl.too_big then
+        c.prev[first] = tbl
+      end
     end
     local list = {}
     for first, tbl in pairs(c.prev) do
-      list[#list + 1] = { first = first, stamp = tbl.stamp, cells = tbl.measured.ncells }
+      -- A too-big table keeps its rows rather than its cells: they are its cost.
+      local cost = tbl.too_big and #tbl.lines or tbl.measured.ncells
+      list[#list + 1] = { first = first, stamp = tbl.stamp, cells = cost }
     end
     table.sort(list, function(x, y)
       return x.stamp > y.stamp
@@ -264,9 +270,12 @@ end
 -- A row too wide to align, for a row whose prefix alone is past the width limit.
 local WIDE_ROW = { wide = true, indent = "", cells = {} }
 
--- What a table too big to align measures as: nothing kept to reuse.
-local function too_big(t)
-  t.lines, t.offs, t.complete = {}, {}, false
+-- What a table too big to align measures as. With the `lines` it was read from kept, an
+-- edit elsewhere finds the same rows and reuses the verdict instead of reading the
+-- table again up to where it gave up (a too-big table on screen would otherwise cost
+-- that on every keystroke). Nothing else of it is kept.
+local function too_big(t, lines)
+  t.lines, t.offs, t.complete, t.too_big = lines or {}, {}, false, lines ~= nil
   return {
     rows = {},
     widths = {},
@@ -291,7 +300,7 @@ local function previous(c, t, header)
   end
   local best, dist = nil, math.huge
   for first, p in pairs(c.prev) do
-    if p.col == t.col and p.complete then
+    if p.col == t.col and (p.complete or p.too_big) then
       local d = math.abs(first - t.first) + (p.lines[1] == header and 0 or 1e9)
       if d < dist then
         best, dist = p, d
@@ -322,6 +331,19 @@ local function measure_table(buf, c, t)
   local n, rows, offs = #lines, {}, {}
   local head, tail = 0, 0
   local prev = previous(c, t, lines[1])
+  -- The same rows as a table already found too big: the same verdict, without a read.
+  if prev and prev.too_big and prev.col == t.col and #prev.lines == n then
+    local same = true
+    for i = 1, n do
+      if lines[i] ~= prev.lines[i] then
+        same = false
+        break
+      end
+    end
+    if same then
+      return too_big(t, lines)
+    end
+  end
   if prev and prev.complete then
     local pl, pn = prev.lines, #prev.lines
     while head < n and head < pn and lines[head + 1] == pl[head + 1] do
@@ -352,11 +374,11 @@ local function measure_table(buf, c, t)
       row = layout.row(line:sub(p + 1), base, base + layout.MAX_WIDTH, i > 2)
     end
     if row and row.wide then
-      return too_big(t)
+      return too_big(t, lines)
     end
     cells = cells + (row and #row.cells or 0)
     if cells > layout.MAX_CELLS then
-      return too_big(t)
+      return too_big(t, lines)
     end
     rows[i], offs[i] = row or false, p
     came[#came + 1] = row or false

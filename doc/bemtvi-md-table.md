@@ -152,11 +152,11 @@ Both commands:
 - keep what comes before the table on each row: a block quote's `>` and a list item's indent;
 - find tables through the markdown treesitter grammar, as the alignment does, so a table in a code
   fence is never touched;
-- keep each row's leading whitespace, and anything after its last pipe other than spaces and tabs
-  (a stray `\r`);
+- trim only spaces and tabs from a cell: anything else (a stray `\r`, a form feed) is text, and stays,
+  as does a row's leading whitespace and anything after its last pipe other than spaces and tabs;
 - fail with an error, leaving the buffer alone, when there is no table at the cursor or in the
   range, when the buffer isn't modifiable, or when a table in it can't be rewritten: both refuse one
-  over 20000 rows or that doesn't start with a header and a delimiter row, and `:MdTableExpand` also
+  over 20000 rows or 200000 cells or that doesn't start with a header and a delimiter row, and `:MdTableExpand` also
   one too big to align (see [What it aligns](#what-it-aligns)) or with a tab in a cell. It's all or nothing: when one table of a range fails, none is changed;
 - leave an already-formatted table untouched (the buffer isn't marked modified) and say so.
 

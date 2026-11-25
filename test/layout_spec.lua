@@ -473,3 +473,34 @@ btv.test.describe("layout: what a row's width counts", function()
     expect(out[3]).to_be("lazy\trow")
   end)
 end)
+
+btv.test.describe("layout: characters that aren't plain", function()
+  btv.test.it("measures a control character at the width it is drawn", function()
+    -- `| a<C-a> `: `^A` is two cells, so column 1 is 6 cells wide.
+    expect(layout.row("| a\1 | b |").cells[1].seg).to_be(6)
+    local pads = layout.layout({ "| a\1 | b |", "|---|---|", "| abcdef | x |" })
+    expect(pads[1][1].n).to_be(3)
+  end)
+
+  btv.test.it("keeps a carriage return, trimming only spaces and tabs", function()
+    expect(layout.shrink({ "| a\r | b\r", "|---|---|\r", "| abcdef | x |\r", "c | d  \r" })).to_equal({
+      "| a\r | b\r",
+      "|---|---|\r",
+      "| abcdef | x |\r",
+      "c | d\r",
+    })
+  end)
+
+  btv.test.it("measures a long cell of combining marks as the narrow cell it is", function()
+    local cell = "x" .. ("\u{301}"):rep(3000)
+    local m = layout.measure({ "| " .. cell .. " | b |", "|---|---|" }, { limit = 1000 })
+    expect(m.wide).to_be(false)
+    expect(m.rows[1].cells[1].seg).to_be(4)
+  end)
+
+  btv.test.it("refuses to shrink a row of more cells than MAX_CELLS", function()
+    local out, why = layout.shrink({ ("|"):rep(layout.MAX_CELLS + 10), "|---|" })
+    expect(out).to_be_nil()
+    expect(why).to_match("more than")
+  end)
+end)

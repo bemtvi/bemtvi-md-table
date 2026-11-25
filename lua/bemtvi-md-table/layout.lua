@@ -25,34 +25,43 @@ M.MAX_CELLS = 200000
 -- which its caller sets (`init.lua` does, per buffer). `nil` means the current buffer's.
 M.tabstop = nil
 
+-- Printable ASCII: one cell a byte. Anything else (a tab, a control character the
+-- window draws as `^X`, a multi-byte character) is measured.
+local NOT_PLAIN = "[%c\128-\255]"
+
 -- The display cells `s` takes when it starts at screen column `col` (tabs expand from
--- there, on `M.tabstop`). Plain ASCII without a tab is one cell a byte, which skips the
--- measure for the common cell.
+-- there, on `M.tabstop`). Printable ASCII is one cell a byte, which skips the measure
+-- for the common cell.
 local function width(s, col)
-  if not s:find("[\t\128-\255]") then
+  if not s:find(NOT_PLAIN) then
     return #s
   end
   return btv.str.displaywidth(s, col or 0, M.tabstop)
 end
 M.width = width
 
--- `s` without the whitespace around it. A scan rather than `^%s*(.-)%s*$`, whose lazy
--- capture rescans a run of inner spaces at every step (quadratic on a long one).
+-- `s` without the spaces and tabs around it: a cell's padding, in markdown's terms. Any
+-- other byte (a stray `\r`, a form feed) is text, and kept. A scan rather than
+-- `^%s*(.-)%s*$`, whose lazy capture rescans a run of inner spaces at every step
+-- (quadratic on a long one).
 local function trim(s)
-  local a = s:find("%S")
+  local a = s:find("[^ \t]")
   if not a then
     return ""
   end
   local b = #s
-  -- `%s`: tab, newline, vertical tab, form feed, carriage return, space. The scan
-  -- stops at `a`, a non-space, at the latest.
+  -- The scan stops at `a`, a non-blank, at the latest.
   local c = s:byte(b)
-  while c == 32 or (c >= 9 and c <= 13) do
+  while c == 32 or c == 9 do
     b = b - 1
     c = s:byte(b)
   end
   return s:sub(a, b)
 end
+
+-- How many bytes of a non-plain cell are measured at a time, so a huge one stops being
+-- measured once it runs past the width limit.
+local CHUNK = 4096
 
 -- The byte offset (1-based) of the first unescaped `|` in `line` at or after `from`,
 -- or nil. A pipe preceded by an odd run of backslashes is escaped (`\|` is a literal
@@ -109,26 +118,43 @@ end
 -- of the line, `base` included, so a leading pipe and any indentation count toward
 -- column 1, and a row written with a leading pipe lines up with one written without.
 --
--- `tail` is what follows the last pipe when that is only whitespace (as written).
+-- `tail` is what follows the last pipe when that is only whitespace (as written), and
+-- `text_end` the row's last byte that isn't whitespace.
 --
 -- With `limit`, parsing stops once the row runs past that display column, and the
 -- row is `{ wide = true, cells = {} }`: a table holding it is wider than any limit
 -- worth aligning, so the rest of it doesn't matter. (Not for rewriting: that row has
--- lost its cells.) A cell is known to run past it before it is measured when it holds
--- more bytes than the cells left could (a character is at most 4 bytes), so one huge
--- cell costs nothing.
-function M.row(line, base, limit, lone)
+-- lost its cells.) A long cell is measured a chunk at a time, so one huge cell costs
+-- only what it takes to run past the limit. With `max_cells`, a row of more cells than
+-- that comes back the same way, before they are all built.
+function M.row(line, base, limit, lone, max_cells)
   base = base or 0
-  -- Plain ASCII without a tab: a cell's width is its byte count.
-  local plain = not line:find("[\t\128-\255]")
+  -- Printable ASCII: a cell's width is its byte count.
+  local plain = not line:find(NOT_PLAIN)
   -- The width of `line`'s bytes `a`..`b` starting at screen column `col`, or nil when
   -- that would run past `limit`.
   local function measure(a, b, col)
-    local n = b - a + 1
-    if limit and n > (plain and 1 or 4) * (limit - col + 1) then
-      return nil
+    if plain then
+      local n = b - a + 1
+      if limit and col + n > limit + 1 then
+        return nil
+      end
+      return n
     end
-    return plain and n or width(line:sub(a, b), col)
+    local w, i = 0, a
+    while i <= b do
+      local j = math.min(b, i + CHUNK - 1)
+      -- Not inside a multi-byte character: run on over its continuation bytes.
+      while j < b and line:byte(j + 1) >= 0x80 and line:byte(j + 1) < 0xC0 do
+        j = j + 1
+      end
+      w = w + width(line:sub(i, j), col + w)
+      if limit and col + w > limit + 1 then
+        return nil
+      end
+      i = j + 1
+    end
+    return w
   end
   local first_text = line:find("%S")
   if not first_text then
@@ -160,6 +186,9 @@ function M.row(line, base, limit, lone)
     end
     cells[#cells + 1] =
       { s = prev + 1, e = p - 1, close = p, seg = w + (seg_from == 1 and base or 0) }
+    if max_cells and #cells > max_cells then
+      return { wide = true, indent = "", cells = {} }
+    end
     col = col + w + 1 -- the pipe
     prev, seg_from = p, p + 1
     p = next_pipe(line, p + 1)
@@ -179,6 +208,7 @@ function M.row(line, base, limit, lone)
     lead = leading,
     cells = cells,
     tail = trailing and line:sub(last_text + 1) or "",
+    text_end = last_text,
   }
 end
 
@@ -446,9 +476,14 @@ function M.shrink(lines)
   if #lines > M.MAX_ROWS then
     return nil, ("the table is longer than %d rows"):format(M.MAX_ROWS)
   end
-  local rows = {}
+  local rows, cells = {}, 0
   for i, line in ipairs(lines) do
-    rows[i] = M.row(line)
+    local row = M.row(line, 0, nil, false, M.MAX_CELLS - cells)
+    if row and row.wide then
+      return nil, ("the table holds more than %d cells"):format(M.MAX_CELLS)
+    end
+    rows[i] = row
+    cells = cells + (row and #row.cells or 0)
   end
   local delimiter = M.aligns(rows[2], lines[2] or "") ~= nil
   if not (delimiter and rows[1] and #rows[1].cells > 0) then
@@ -462,7 +497,17 @@ function M.shrink(lines)
     else
       local parts = { row.indent, row.lead and "|" or "" }
       for j, cell in ipairs(row.cells) do
-        local text = trim(line:sub(cell.s, cell.e))
+        -- (The first cell of a row without a leading pipe starts at the line start; its
+        -- indent is written back on its own, above.)
+        local from = (j == 1 and not row.lead) and cell.s + #row.indent or cell.s
+        local text
+        if cell.close then
+          text = trim(line:sub(from, cell.e))
+        else
+          -- The open last cell: its text, then whatever after it isn't a space or tab
+          -- (a stray `\r` at the line's end is a character, the blanks are padding).
+          text = trim(line:sub(from, row.text_end)) .. line:sub(row.text_end + 1):gsub("[ \t]", "")
+        end
         if i == 2 and delimiter then
           local l, r = text:sub(1, 1) == ":", text:sub(-1) == ":"
           text = (l and ":" or "-") .. "-" .. (r and ":" or "-")

@@ -254,8 +254,8 @@ btv.test.describe("bemtvi-md-table", function()
       return (painted(t, 2) == "|---|---------|") or nil
     end, { message = "the delimiter row was not padded to the tab's width" })
     -- The buffer's own 'tabstop' decides: on stops of 8 the tab runs to 16, 13 cells.
+    -- The change re-runs the provider by itself.
     btv.bo.tabstop = 8
-    md.refresh()
     t:wait_for(function()
       return (painted(t, 2) == "|---|-------------|") or nil
     end, { message = "the padding didn't follow a 'tabstop' change" })
@@ -378,6 +378,35 @@ btv.test.describe("bemtvi-md-table", function()
     t:sleep(100)
     layout.row = real
     expect(parsed).to_be(0)
+  end)
+
+  btv.test.it("doesn't read a too-big table again for an edit next to it", function(t)
+    local doc = { "Some text", "", "| k | v |", "|---|---|" }
+    for i = 1, 3000 do
+      doc[#doc + 1] = ("| %d | x |"):format(i)
+    end
+    doc[#doc + 1] = "| " .. ("w"):rep(1200) .. " | x |"
+    open(t, doc)
+    t:sleep(300)
+    local layout = require("bemtvi-md-table.layout")
+    local real, parsed = layout.row, 0
+    layout.row = function(...)
+      parsed = parsed + 1
+      return real(...)
+    end
+    local runs = 0
+    local marks = md.marks
+    md.marks = function(...)
+      runs = runs + 1
+      return marks(...)
+    end
+    t:feed("1GA more<Esc>")
+    t:wait_for(function()
+      return (runs > 0) or nil
+    end, { message = "the provider never ran after the edit" })
+    layout.row, md.marks = real, marks
+    expect(parsed).to_be(0)
+    expect(#inline(3)).to_be(0)
   end)
 
   btv.test.it("forgets a buffer's layout when the buffer is deleted", function(t)
