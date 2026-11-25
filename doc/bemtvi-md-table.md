@@ -77,8 +77,9 @@ Left alone, because the grammar doesn't call them tables:
 
 Buffers where treesitter is off (`btv.bo.ts_highlight = false`) get no alignment either.
 
-The last cell of a row with no trailing pipe counts toward its column's width but is not padded,
-because nothing after it needs lining up.
+The last cell of a row with no trailing pipe counts toward its column's width (up to its text, not
+the spaces after it) but is not padded, because nothing after it needs lining up. A body row written
+without any pipe is such a cell: GFM reads it as a row of one.
 
 A table whose columns and pipes add up to more than 1000 display cells, that has more than 20000
 rows, or that holds more than 200000 cells in all is left unaligned: a table that wide can't line up

@@ -78,8 +78,10 @@ local function is_pipe(line, p)
   return p ~= nil and line:byte(p) == 124 and next_pipe(line, p) == p
 end
 
--- `M.row(line[, base[, limit]])` -> nil | row. Splits a table row into cells. `nil` when the
--- line has no unescaped pipe (so it cannot be a row) or is blank. `base` is the display
+-- `M.row(line[, base[, limit[, lone]]])` -> nil | row. Splits a table row into cells.
+-- `nil` when the line is blank, or has no unescaped pipe and `lone` isn't set. With
+-- `lone`, a line without a pipe is a row of one open cell: GFM's body row written
+-- without any pipe. `base` is the display
 -- column `line` starts at (default 0): the width of a block quote's `> ` or a list
 -- item's indent cut off before it, so column 1 is measured from the real line start
 -- and tabs expand from the column they sit at.
@@ -113,7 +115,7 @@ end
 -- lost its cells.) A cell is known to run past it before it is measured when it holds
 -- more bytes than the cells left could (a character is at most 4 bytes), so one huge
 -- cell costs nothing.
-function M.row(line, base, limit)
+function M.row(line, base, limit, lone)
   base = base or 0
   -- Plain ASCII without a tab: a cell's width is its byte count.
   local plain = not line:find("[\t\128-\255]")
@@ -131,7 +133,7 @@ function M.row(line, base, limit)
     return nil
   end
   local p = next_pipe(line, 1)
-  if not p then
+  if not p and not lone then
     return nil
   end
   -- The last non-space byte, found from the end (only trailing whitespace is walked).
@@ -141,7 +143,7 @@ function M.row(line, base, limit)
     last_text = last_text - 1
     c = line:byte(last_text)
   end
-  local leading = first_text == p
+  local leading = p ~= nil and first_text == p
   local trailing = is_pipe(line, last_text)
   local cells = {}
   local prev = 0
@@ -161,7 +163,9 @@ function M.row(line, base, limit)
     p = next_pipe(line, p + 1)
   end
   if not trailing then
-    local w = measure(seg_from, #line, col)
+    -- The open last cell's width stops at its text: spaces after it are invisible,
+    -- and nothing follows them to line up with.
+    local w = measure(seg_from, last_text, col)
     if not w then
       return { wide = true, indent = "", cells = {} }
     end
@@ -330,15 +334,17 @@ end
 
 -- `M.measure(lines[, opts])` -> measured. Parses one whole table (the header row, the
 -- delimiter row, then the body rows) and works out its column widths, as
--- `M.measure_rows`. `opts.base[i]` is the display column line `i` starts at, and
--- `opts.limit` how far past it a row is parsed (see `M.row`).
+-- `M.measure_rows`. `opts.base[i]` is the display column line `i` starts at,
+-- `opts.limit` how far past it a row is parsed, and `opts.lone` makes a body line
+-- without a pipe a one-cell row (see `M.row`).
 function M.measure(lines, opts)
   local base = opts and opts.base or {}
   local limit = opts and opts.limit
+  local lone = opts and opts.lone
   local rows = {}
   for i, line in ipairs(lines) do
     local b = base[i] or 0
-    rows[i] = M.row(line, b, limit and b + limit) or false
+    rows[i] = M.row(line, b, limit and b + limit, lone and i > 2) or false
   end
   return M.measure_rows(rows, lines[2])
 end
@@ -497,12 +503,14 @@ function M.expand(lines, opts)
     return nil, why
   end
   for _, line in ipairs(shrunk) do
-    -- (A tab in the leading whitespace sits before any padding, so it never moves.)
-    if line:find("\t", #line:match("^%s*") + 1, true) then
+    -- (A tab in the leading whitespace sits before any padding, so it never moves, and
+    -- neither does one in a row without a pipe, which is never padded.)
+    if next_pipe(line, 1) and line:find("\t", #line:match("^%s*") + 1, true) then
       return nil, "a cell holds a tab, which padding would move; replace it with spaces"
     end
   end
-  local measured = M.measure(shrunk, { base = opts and opts.base, limit = M.MAX_WIDTH })
+  local measured =
+    M.measure(shrunk, { base = opts and opts.base, limit = M.MAX_WIDTH, lone = true })
   if measured.wide then
     return nil,
       ("the table is wider than %d display cells or holds more than %d cells"):format(

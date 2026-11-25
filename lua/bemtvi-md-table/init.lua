@@ -341,13 +341,14 @@ local function measure_table(buf, c, t)
     local line = lines[i]
     local p = prefix_len(line, i, t.col)
     local row
+    -- A body row may be written without any pipe (`lone`).
     if p == 0 then
-      row = layout.row(line, 0, layout.MAX_WIDTH)
+      row = layout.row(line, 0, layout.MAX_WIDTH, i > 2)
     elseif p > layout.MAX_WIDTH then
       row = WIDE_ROW -- (each byte of a prefix is at least one cell)
     else
       local base = layout.width(line:sub(1, p))
-      row = layout.row(line:sub(p + 1), base, base + layout.MAX_WIDTH)
+      row = layout.row(line:sub(p + 1), base, base + layout.MAX_WIDTH, i > 2)
     end
     if row and row.wide then
       return too_big(t)
@@ -435,7 +436,14 @@ local function reformat(name, transform, buf, first, last)
     if res.tick ~= tick or btv.buf.changedtick(buf) ~= tick then
       error(name .. ": the buffer changed while its tables were being found; run it again", 0)
     end
-    local tables = tables_of(buf, res.matches)
+    -- The query counts a table as touching a row its node merely ends in (the `>` of
+    -- the line after a block-quoted table); only tables whose rows meet the range count.
+    local tables = {}
+    for _, tbl in ipairs(tables_of(buf, res.matches)) do
+      if tbl.first <= last and tbl.last >= first then
+        tables[#tables + 1] = tbl
+      end
+    end
     if #tables == 0 then
       if first == last then
         error(name .. ": no markdown table on line " .. (first + 1), 0)

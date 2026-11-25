@@ -447,3 +447,24 @@ btv.test.describe("layout: caps that stop the work early", function()
     end
   end)
 end)
+
+btv.test.describe("layout: what a row's width counts", function()
+  btv.test.it("doesn't count spaces after an open last cell", function()
+    local pads = layout.layout({ "| a | b |", "|---|---|", "| c | d          " })
+    expect(#pads[1]).to_be(0)
+    expect(#pads[2]).to_be(0)
+  end)
+
+  btv.test.it("counts a body row written without any pipe as one cell", function()
+    local m = layout.measure({ "| a | b |", "|---|---|", "a lazy row" }, { lone = true })
+    expect(m.widths[1]).to_be(#"a lazy row")
+    -- Not without `lone`: the header and delimiter rows can't be pipeless.
+    expect(layout.row("a lazy row")).to_be_nil()
+  end)
+
+  btv.test.it("expands a table with a tab in a row without pipes", function()
+    local out = layout.expand({ "| a | b |", "|---|---|", "lazy\trow" })
+    expect(out).never.to_be_nil()
+    expect(out[3]).to_be("lazy\trow")
+  end)
+end)

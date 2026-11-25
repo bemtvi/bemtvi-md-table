@@ -210,6 +210,15 @@ btv.test.describe("MdTableShrink / MdTableExpand", function()
     expect(t:lines()).to_equal(TWO_TABLES)
   end)
 
+  btv.test.it("finds no table on the quote line after a block-quoted one", function(t)
+    local doc = { "> | a   | b |", "> |---|---|", "> | c | d |", ">", "> after" }
+    open(t, doc)
+    local ok, err = pcall(btv.await, md.shrink(0, 3, 3))
+    expect(ok).to_be(false)
+    expect(tostring(err)).to_match("no markdown table on line 4")
+    expect(t:lines()).to_equal(doc)
+  end)
+
   btv.test.it("fails loud off a table, leaving the buffer alone", function(t)
     open(t, TWO_TABLES)
     t:feed("5G")
