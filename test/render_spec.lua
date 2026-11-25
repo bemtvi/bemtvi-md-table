@@ -236,6 +236,15 @@ btv.test.describe("bemtvi-md-table", function()
     expect(painted(t, 2)).to_be("  |-----|---|")
   end)
 
+  btv.test.it("lines up rows whose prefixes are written differently", function(t)
+    md.setup({ fillchars = "pad:." })
+    open(t, { "> | a | b |", ">|---|---|", ">| ccc | d |" })
+    t:wait_for(function()
+      return (painted(t, 1) == "> | a .| b |") or nil
+    end, { message = "the header never lined up with the lazy rows" })
+    expect(painted(t, 2)).to_be(">|-----|---|")
+  end)
+
   btv.test.it("measures a tab from the column it sits at", function(t)
     md.setup({ fillchars = "pad:." })
     -- " abc<Tab>d " starts at screen column 5, so the tab runs to 16: 13 cells.
@@ -271,6 +280,41 @@ btv.test.describe("bemtvi-md-table", function()
     end, { message = "the edit was never laid out" })
     layout.row = real
     expect(parsed <= 2).to_be(true)
+  end)
+
+  btv.test.it("parses none of a big table's rows for an edit next to it", function(t)
+    local doc = { "Some text", "", "| k | v |", "|---|---|" }
+    for i = 1, 2000 do
+      doc[#doc + 1] = ("| %d | x |"):format(i)
+    end
+    open(t, doc)
+    wait_aligned(t, 3, 5)
+    local layout = require("bemtvi-md-table.layout")
+    local real, parsed = layout.row, 0
+    layout.row = function(...)
+      parsed = parsed + 1
+      return real(...)
+    end
+    local runs = 0
+    local marks = md.marks
+    md.marks = function(...)
+      runs = runs + 1
+      return marks(...)
+    end
+    t:feed("1GA more<Esc>")
+    t:wait_for(function()
+      return (runs > 0) or nil
+    end, { message = "the provider never ran after the edit" })
+    layout.row, md.marks = real, marks
+    expect(parsed).to_be(0)
+  end)
+
+  btv.test.it("draws a table whose body row has more cells than the header", function(t)
+    md.setup({ fillchars = "pad:." })
+    open(t, { "| a | bbb |", "|---|---|", "| x | y ||" })
+    t:wait_for(function()
+      return (painted(t, 3) == "| x | y ..||") or nil
+    end, { message = "the row with an extra empty cell was never padded" })
   end)
 
   btv.test.it("forgets a buffer's layout when the buffer is deleted", function(t)

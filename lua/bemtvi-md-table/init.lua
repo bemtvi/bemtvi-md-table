@@ -59,8 +59,9 @@ M.config =
 -- not on every repaint.
 M._fill_errors = {}
 
--- Per-buffer measurements, valid for one `changedtick`, dropped when the buffer is:
---   `{ tick, tables = { [first_row] = { first, last, col, measured } }, rows, prev_rows }`
+-- Per-buffer measurements, dropped when the buffer is: the tables measured at `tick`,
+-- and those of the tick before, whose parsed rows the next measure reuses:
+--   `{ tick, tables = { [first_row] = { first, last, col, lines, offs, measured } }, prev }`
 M._cache = {}
 
 -- The query the provider asks the parse tree.
@@ -186,44 +187,31 @@ end
 
 -- ----- analysis ---------------------------------------------------------------
 
--- The cache entry for `buf`, rebuilt when its text changes. Parsed rows carry over
--- from the entry before (keyed by their text and starting column), so an edit
--- re-parses only the lines it changed; a row neither entry saw is dropped with it.
+-- The cache entry for `buf`. Its tables are valid for one `changedtick`; on a change
+-- the ones measured so far move to `prev`, where the next measure of each finds the
+-- rows the edit left alone (see `measure_table`).
 local function cache_for(buf)
   local tick = btv.buf.changedtick(buf)
   local c = M._cache[buf]
-  if not c or c.tick ~= tick then
-    c = { tick = tick, tables = {}, rows = {}, prev_rows = c and c.rows or {} }
+  if not c then
+    c = { tick = tick, tables = {}, prev = {} }
     M._cache[buf] = c
+  elseif c.tick ~= tick then
+    c.tick, c.prev, c.tables = tick, c.tables, {}
   end
   return c
 end
 
--- A `layout.row` for the rows of `c`'s buffer, memoized as `cache_for` describes.
-local function row_parser(c)
-  return function(line, base)
-    local key = base .. "\0" .. line
-    local row = c.rows[key]
-    if row == nil then
-      row = c.prev_rows[key]
-      if row == nil then
-        row = layout.row(line, base) or false
-      end
-      c.rows[key] = row
-    end
-    return row or nil
+-- What comes before the table on each of its rows: the container markup a block
+-- quote or list puts there. The grammar says where the table starts on its first row
+-- (`col`, after a list marker or `> ` there); on the rows after it, the prefix is the
+-- run of block-quote `>`s and whitespace the row opens with, which can be written
+-- differently from row to row (`> ` then a lazy `>`, a tab for a list's indent).
+local function prefix_len(line, i, col)
+  if i == 1 then
+    return math.min(col, #line)
   end
-end
-
--- Whether `prefix`, what comes before the table's start column on row `i` (1-based),
--- is the kind of thing that can: whitespace and block-quote `>`s, and on the first row
--- also the list marker the table follows (`- | a |`, `1. | a |`).
-local function prefix_ok(prefix, i)
-  if prefix:find("^[%s>]*$") then
-    return true
-  end
-  return i == 1
-    and (prefix:find("^[%s>]*[-+*][ \t]+$") or prefix:find("^[%s>]*%d+[.)][ \t]+$")) ~= nil
+  return #line:match("^[ \t>]*")
 end
 
 -- The rows (0-based, inclusive) a captured node covers. A node can end at the start
@@ -253,21 +241,70 @@ local function tables_of(buf, matches)
   return out
 end
 
--- Measure one table of `buf` for drawing. Each row is laid out from the table's start
--- column, the prefix before it counted by its width; a row whose prefix isn't one
--- (see `prefix_ok`) is left out of the alignment rather than misread.
-local function measure_table(buf, c, tbl)
-  local lines = btv.buf.lines(buf, tbl.first, tbl.last + 1)
-  local bodies, base = {}, {}
-  for i, line in ipairs(lines) do
-    local prefix = line:sub(1, tbl.col)
-    if #prefix == tbl.col and prefix_ok(prefix, i) then
-      bodies[i], base[i] = line:sub(tbl.col + 1), layout.width(prefix)
-    else
-      bodies[i], base[i] = "", 0
+-- The table measured before the last change that `t` most likely is now: the one
+-- that started on the same row, else the nearest (lines added or removed above it
+-- moved it). `measure_table` checks the rows themselves, so a wrong guess only costs
+-- a full parse.
+local function previous(c, t)
+  local best = c.prev[t.first]
+  if best then
+    return best
+  end
+  local dist = math.huge
+  for first, p in pairs(c.prev) do
+    if p.col == t.col and math.abs(first - t.first) < dist then
+      best, dist = p, math.abs(first - t.first)
     end
   end
-  return layout.measure(bodies, { base = base, row = row_parser(c) })
+  return best
+end
+
+-- Measure one table of `buf` for drawing. Each row is laid out from where the table
+-- starts on it (see `prefix_len`), the prefix before it counted by its width.
+--
+-- A buffer line the edit didn't touch is the very same string as before, so the rows
+-- matching the previous measure's from either end (`==` on those is a pointer check)
+-- keep their parse, and only the rows in between are parsed again: the table an edit
+-- was made in costs the changed rows, and a table next to the edit, none. Row 1 is
+-- never taken from the other end, since its prefix is read differently.
+local function measure_table(buf, c, t)
+  if t.last - t.first + 1 > layout.MAX_ROWS then
+    t.lines, t.offs = {}, {}
+    return { rows = {}, widths = {}, aligns = {}, delimiter = "", wide = true }
+  end
+  local lines = btv.buf.lines(buf, t.first, t.last + 1)
+  local n, rows, offs = #lines, {}, {}
+  local head, tail = 0, 0
+  local prev = previous(c, t)
+  if prev and prev.col == t.col then
+    local pl, pn = prev.lines, #prev.lines
+    while head < n and head < pn and lines[head + 1] == pl[head + 1] do
+      head = head + 1
+      rows[head], offs[head] = prev.measured.rows[head], prev.offs[head]
+    end
+    while
+      n - tail > math.max(head, 1)
+      and pn - tail > math.max(head, 1)
+      and lines[n - tail] == pl[pn - tail]
+    do
+      rows[n - tail], offs[n - tail] = prev.measured.rows[pn - tail], prev.offs[pn - tail]
+      tail = tail + 1
+    end
+  end
+  for i = head + 1, n - tail do
+    local line = lines[i]
+    local p = prefix_len(line, i, t.col)
+    offs[i] = p
+    if p == 0 then
+      rows[i] = layout.row(line, 0, layout.MAX_WIDTH) or false
+    else
+      local base = layout.width(line:sub(1, p))
+      rows[i] = layout.row(line:sub(p + 1), base, base + layout.MAX_WIDTH) or false
+    end
+  end
+  t.lines, t.offs = lines, offs
+  local delimiter = lines[2] and lines[2]:sub((offs[2] or 0) + 1)
+  return layout.measure_rows(rows, delimiter)
 end
 
 -- `M.marks(buf, top, bot, matches[, fillchars])` -> the marks that align every table
@@ -275,8 +312,8 @@ end
 -- `(pipe_table) @table`: each table node with its full extent, even where it runs past
 -- the viewport. `fillchars` defaults to setup's.
 --
--- A table is measured whole, once per change to the buffer (and then only the rows
--- that changed are parsed again); its padding is built for the visible rows only.
+-- A table is measured once per change to the buffer, parsing only the rows that
+-- changed (see `measure_table`); its padding is built for the visible rows only.
 function M.marks(buf, top, bot, matches, fillchars)
   fillchars = fillchars or M.config.fillchars
   local c = cache_for(buf)
@@ -294,7 +331,7 @@ function M.marks(buf, top, bot, matches, fillchars)
         local text = (pad.delimiter and fillchars.delimiter or fillchars.pad):rep(pad.n)
         marks[#marks + 1] = {
           row,
-          tbl.col + pad.col,
+          tbl.offs[row - tbl.first + 1] + pad.col,
           virt_text = { { text, pad.delimiter and "MdTableDelimiter" or "MdTablePad" } },
           virt_text_pos = "inline",
         }
@@ -307,25 +344,15 @@ end
 -- ----- rewriting --------------------------------------------------------------
 
 -- Rewrite one table's lines with `transform(bodies, base)` (`layout.shrink` /
--- `layout.expand`), which returns the new bodies or nil and a reason. `col` is the
--- byte column the table starts at on its first row; every row keeps what's before
--- that column (a block quote's `> `, a list item's indent or marker), which must be
--- one (see `prefix_ok`). Returns the new lines, or raises naming the row it can't.
+-- `layout.expand`), which returns the new bodies or nil and a reason. Each row keeps
+-- what comes before the table on it (see `prefix_len`) exactly as written. Returns
+-- the new lines, or raises naming the table it can't rewrite.
 local function rewrite(lines, col, first, transform)
   local prefixes, bodies, base = {}, {}, {}
   for i, line in ipairs(lines) do
-    local prefix = line:sub(1, col)
-    if #prefix < col or not prefix_ok(prefix, i) then
-      error(
-        ("row %d doesn't share the table's prefix (its first %d bytes): %q"):format(
-          first + i,
-          col,
-          line
-        ),
-        0
-      )
-    end
-    prefixes[i], bodies[i], base[i] = prefix, line:sub(col + 1), layout.width(prefix)
+    local n = prefix_len(line, i, col)
+    prefixes[i], bodies[i] = line:sub(1, n), line:sub(n + 1)
+    base[i] = layout.width(prefixes[i])
   end
   local out, why = transform(bodies, base)
   if not out then
@@ -390,7 +417,11 @@ local function target(name, bufnr, first, last)
     end
     first = btv.cursor.get()[1] - 1
   end
-  return buf, first, last or first
+  last = last or first
+  if last < first then
+    first, last = last, first
+  end
+  return buf, first, last
 end
 
 -- `M.shrink([bufnr[, first, last]])` -> promise of the number of tables changed. Writes

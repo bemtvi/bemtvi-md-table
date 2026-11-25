@@ -29,11 +29,16 @@ CACHE="$ROOT/.panvimdoc"
 command -v pandoc >/dev/null 2>&1 || { echo "error: pandoc (>= 3) is required" >&2; exit 1; }
 
 # Fetch/pin panvimdoc into the cache. The cache is used only when it is checked out
-# at exactly the pinned commit: one left at another revision (a pin bump, or a fetch
-# that cloned but failed to check out) is fetched again rather than run. A fetch is
-# assembled in a temporary directory and moved into place only once verified.
-cached_ref() { git -C "$CACHE" rev-parse HEAD 2>/dev/null || true; }
-if [ "$(cached_ref)" != "$PANVIMDOC_REF" ] || [ ! -e "$CACHE/panvimdoc.sh" ]; then
+# at exactly the pinned commit with no file changed: one left at another revision (a
+# pin bump, or a fetch that cloned but failed to check out) or edited since is
+# fetched again rather than run. A fetch is assembled in a temporary directory and
+# moved into place only once verified.
+cache_ok() {
+  [ -e "$CACHE/panvimdoc.sh" ] &&
+    [ "$(git -C "$CACHE" rev-parse HEAD 2>/dev/null)" = "$PANVIMDOC_REF" ] &&
+    [ -z "$(git -C "$CACHE" status --porcelain 2>/dev/null)" ]
+}
+if ! cache_ok; then
   echo "fetching panvimdoc @ ${PANVIMDOC_REF} into .panvimdoc/ ..."
   TMP="$(mktemp -d "$ROOT/.panvimdoc.tmp.XXXXXX")"
   trap 'rm -rf "$TMP"' EXIT

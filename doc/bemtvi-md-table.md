@@ -63,7 +63,9 @@ in display cells, so CJK text and emoji line up. A shorter cell gets the differe
 
 Rows with and without outer pipes line up with each other, since column 1 is measured from the
 start of the line. That includes what comes before the table on each row: a block quote's `>`, a
-list item's indent, or the list marker a table starts right after (`- | a | b |`). A `\|` is a
+list item's indent, or the list marker a table starts right after (`- | a | b |`), each counted by
+its width, so rows that write them differently (`> ` then a lazy `>`, a tab for a list's indent)
+still line up their columns. Only the leading pipes of such rows can't agree. A `\|` is a
 literal pipe, not a cell boundary. A tab counts from the screen column it sits at, on a tabstop of
 8 (the editor's display-width measure doesn't read `'tabstop'` yet).
 
@@ -78,8 +80,10 @@ Buffers where treesitter is off (`btv.bo.ts_highlight = false`) get no alignment
 The last cell of a row with no trailing pipe counts toward its column's width but is not padded,
 because nothing after it needs lining up.
 
-A table whose columns add up to more than 1000 display cells is left unaligned: it can't line up on
-any screen, and padding it would mean a string as long as its widest cell on every row.
+A table whose columns and pipes add up to more than 1000 display cells, or that has more than 20000
+rows, is left unaligned: a table that wide can't line up on any screen, and padding it would mean a
+string as long as its widest cell on every row; one that long would be read again on every change
+to the buffer.
 
 # Toggles
 
@@ -114,7 +118,12 @@ with real spaces and dashes:
 
 Stray spacing in the cells is dropped first, then each cell is padded to its column's widest,
 before its text in a right-aligned column and on both sides in a centered one (with `align = false`
-in `setup`, always on the right). Once the text is a grid there is nothing left to pad, so no
+in `setup`, always on the right). The first cell of a row written without a leading pipe is always
+padded on the right: spaces before it would read as indentation, and four of them would turn the
+table into an indented code block.
+
+A table with a tab inside a cell is refused: padding written before a tab moves it to another tab
+stop and changes its width, so no padding lines it up. Replace the tab with spaces first. Once the text is a grid there is nothing left to pad, so no
 padding is drawn over it.
 
 ## :MdTableShrink
@@ -138,10 +147,11 @@ Both commands:
 - keep what comes before the table on each row: a block quote's `>` and a list item's indent;
 - find tables through the markdown treesitter grammar, as the alignment does, so a table in a code
   fence is never touched;
-- keep each row's leading whitespace;
+- keep each row's leading whitespace, and anything after its last pipe other than spaces and tabs
+  (a stray `\r`);
 - fail with an error, leaving the buffer alone, when there is no table at the cursor or in the
-  range, or when a table in it can't be rewritten (`:MdTableExpand` refuses one wider than 1000
-  display cells). It's all or nothing: when one table of a range fails, none is changed;
+  range, or when a table in it can't be rewritten (`:MdTableExpand` refuses one too big to align,
+  see [What it aligns](#what-it-aligns), or with a tab in a cell). It's all or nothing: when one table of a range fails, none is changed;
 - leave an already-formatted table untouched (the buffer isn't marked modified) and say so.
 
 Each table a range rewrites is its own edit, so it takes one `u` per table to undo the command.
@@ -261,10 +271,11 @@ nothing is left behind when a cell shrinks. While the grammar is still loading, 
 first parse is unfinished, it keeps what is drawn and runs again when the tree is ready.
 
 Only tables on screen are measured, and each table's column widths are cached until the buffer next
-changes (keyed on `btv.buf.changedtick`). Parsed rows outlive that: they're kept by their text, so
-after an edit only the rows that changed are parsed again, and measuring a table is one pass over
-its rows. The padding itself is built for the visible rows only. The cache is dropped when the
-buffer is deleted.
+changes (keyed on `btv.buf.changedtick`). Its parsed rows outlive that: after an edit the table's
+rows are compared with the previous ones from both ends, and only those in between are parsed again,
+so a table next to an edit isn't parsed at all. Parsing a row stops once it runs past the width
+limit. The padding itself is built for the visible rows only. The cache is dropped when the buffer
+is deleted.
 
 # Tests
 

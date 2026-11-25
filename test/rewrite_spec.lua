@@ -18,6 +18,32 @@ local function open(t, lines)
   end, { message = "the markdown parse never found a table" })
 end
 
+-- The screen columns of every unescaped `|` in `line`, tabs expanded from column 0.
+local function pipe_cols(line)
+  local out = {}
+  for p in line:gmatch("()|") do
+    if line:sub(p - 1, p - 1) ~= "\\" then
+      out[#out + 1] = btv.str.displaywidth(line:sub(1, p - 1))
+    end
+  end
+  return table.concat(out, ",")
+end
+
+-- Whether lines `first`..`last` put their pipes in the same screen columns, the
+-- leading pipe aside: rows whose prefixes differ in width (`> ` and a lazy `>`) can't
+-- line that one up.
+local function grid(lines, first, last)
+  local function inner(line)
+    return (pipe_cols(line):gsub("^%d+,?", ""))
+  end
+  for i = first + 1, last do
+    if inner(lines[i]) ~= inner(lines[first]) then
+      return false
+    end
+  end
+  return true
+end
+
 -- Wait until buffer line `n` reads `want`.
 local function wait_line(t, n, want)
   t:wait_for(function()
@@ -146,6 +172,32 @@ btv.test.describe("MdTableShrink / MdTableExpand", function()
     local ok, err = pcall(md.expand, other)
     expect(ok).to_be(false)
     expect(tostring(err)).to_match("give the rows")
+  end)
+
+  for _, case in ipairs({
+    { "a lazy `>` with no space", { "> | a | b |", ">|---|---|", ">| ccc | d |" } },
+    { "a tab for a list's indent", { "- | a | b |", "\t|---|---|", "\t| ccc | d |" } },
+    { "a quote inside a list item", { "- > | a | b |", "  > |---|---|", "  > | ccc | d |" } },
+  }) do
+    btv.test.it("rewrites a table whose rows open with " .. case[1], function(t)
+      open(t, case[2])
+      t:feed("2G")
+      t:cmd("MdTableExpand")
+      t:wait_for(function()
+        return grid(t:lines(), 1, 3) or nil
+      end, { message = "never lined up: " .. table.concat(case[2], " / ") })
+      -- What comes before the table on each row is kept as written.
+      for i, line in ipairs(case[2]) do
+        local before = line:match("^(.-)|")
+        expect(t:lines()[i]:sub(1, #before)).to_be(before)
+      end
+    end)
+  end
+
+  btv.test.it("takes a range given bottom first", function(t)
+    open(t, TWO_TABLES)
+    expect(btv.await(md.expand(0, 2, 0))).to_be(1)
+    wait_line(t, 2, "|--------|----------------|")
   end)
 
   btv.test.it("fails loud off a table, leaving the buffer alone", function(t)

@@ -263,3 +263,60 @@ btv.test.describe("layout: columns", function()
     })
   end)
 end)
+
+btv.test.describe("layout.expand: shapes that broke it", function()
+  btv.test.it("pads a first cell without a leading pipe after its text, aligned or not", function()
+    local out = layout.expand({ "a | b", "--:|---", "abcdefgh | x" })
+    expect(out).to_equal({ "a        | b", "--------:|---", "abcdefgh | x" })
+    -- Nothing became indentation, so shrinking gives back the shrunk table.
+    expect(layout.shrink(out)).to_equal({ "a | b", "--:|---", "abcdefgh | x" })
+    expect(layout.expand({ "a | b", ":-:|---", "abcdefghij | x" })[1]).to_be("a          | b")
+  end)
+
+  btv.test.it("refuses a table with a tab in a cell", function()
+    local out, why = layout.expand({ "| a | x\ty |", "|---|---|", "| bbbbbbb | z |" })
+    expect(out).to_be_nil()
+    expect(why).to_match("tab")
+  end)
+
+  btv.test.it("is stable: expanding an expanded table changes nothing", function()
+    local once = layout.expand({ "| a | bb |", "|:-|--:|", "| ccc | d |", "x | y" })
+    expect(layout.expand(once)).to_equal(once)
+  end)
+end)
+
+btv.test.describe("layout: rows the header doesn't account for", function()
+  btv.test.it("pads a table whose body row has more empty cells than the header", function()
+    local pads = layout.layout({ "| a | b |", "|---|---|", "| x | y ||" })
+    expect(#pads[1]).to_be(0)
+    expect(layout.expand({ "| a | b |", "|---|---|", "| x | y ||" })).to_equal({
+      "| a | b |",
+      "|---|---|",
+      "| x | y | |",
+    })
+  end)
+
+  btv.test.it("counts each pipe toward MAX_WIDTH, so a row of empty cells is wide", function()
+    local m = layout.measure({ "| a |", "|---|", ("|"):rep(1200) })
+    expect(m.wide).to_be(true)
+  end)
+
+  btv.test.it("stops parsing a row past its limit", function()
+    local t0 = os.clock()
+    local row = layout.row(("|"):rep(400000), 0, 1000)
+    expect(row.wide).to_be(true)
+    expect(os.clock() - t0 < 0.1).to_be(true)
+  end)
+
+  btv.test.it("is wide past MAX_ROWS", function()
+    local lines = { "| a |", "|---|" }
+    for i = 1, layout.MAX_ROWS do
+      lines[#lines + 1] = "| x |"
+    end
+    expect(layout.measure(lines).wide).to_be(true)
+  end)
+
+  btv.test.it("keeps a stray carriage return after the last pipe when shrinking", function()
+    expect(layout.shrink({ "|  a |\r", "|---|" })).to_equal({ "| a |\r", "|---|" })
+  end)
+end)

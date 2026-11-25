@@ -24,6 +24,16 @@ command -v pandoc >/dev/null 2>&1 || {
   exit 1
 }
 
+# The check is of what is committed, so it runs only on a clean doc/: regenerating
+# writes the help file in place, which would clobber an uncommitted edit to it, and an
+# uncommitted Markdown edit would be checked instead of the committed text.
+if ! git diff --quiet HEAD -- doc/; then
+  {
+    echo "error: doc/ has uncommitted changes; commit or stash them, then check again"
+  } >&2
+  exit 1
+fi
+
 bash scripts/gen-vimdoc.sh >/dev/null
 
 if ! git diff --quiet -- "$OUTPUT"; then
