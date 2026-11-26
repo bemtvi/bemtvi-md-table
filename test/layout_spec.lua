@@ -498,6 +498,18 @@ btv.test.describe("layout: characters that aren't plain", function()
     expect(m.rows[1].cells[1].seg).to_be(4)
   end)
 
+  btv.test.it("measures a ZWJ emoji whole where a long cell is cut into chunks", function()
+    -- A family emoji is one 2-cell character of 18 bytes. Sliding it across the
+    -- 4096-byte mark puts it astride a chunk boundary for some filler length; measured
+    -- in two halves it came out 4 cells.
+    local fam = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
+    for n = 4070, 4100 do
+      -- `| `, the filler, the emoji, then ` `: column 1 runs from the line start.
+      local seg = layout.row("| " .. ("a"):rep(n) .. fam .. " | b |").cells[1].seg
+      expect(seg).to_be(n + 5)
+    end
+  end)
+
   btv.test.it("refuses to shrink a row of more cells than MAX_CELLS", function()
     local out, why = layout.shrink({ ("|"):rep(layout.MAX_CELLS + 10), "|---|" })
     expect(out).to_be_nil()

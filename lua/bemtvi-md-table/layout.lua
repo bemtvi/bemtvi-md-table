@@ -144,9 +144,25 @@ function M.row(line, base, limit, lone, max_cells)
     local w, i = 0, a
     while i <= b do
       local j = math.min(b, i + CHUNK - 1)
-      -- Not inside a multi-byte character: run on over its continuation bytes.
-      while j < b and line:byte(j + 1) >= 0x80 and line:byte(j + 1) < 0xC0 do
-        j = j + 1
+      if j < b then
+        -- End the chunk on a character boundary, so a ZWJ emoji or a flag isn't
+        -- measured as two halves (`j` is the 0-based offset just past the chunk).
+        -- Asked of the chunk plus a few bytes, not the whole line, so a huge line
+        -- costs each chunk only its own bytes. That gives the line's own answer: the
+        -- chunk starts on a boundary, so nothing before it bears on the ones after,
+        -- and the boundary at `j` looks ahead only to the next character.
+        local e = i - 1 + btv.str.grapheme_floor(line:sub(i, math.min(b, j + 16)), j - i + 1)
+        if e >= i then
+          j = e
+        else
+          -- One character longer than the chunk (a letter under thousands of
+          -- combining marks): cut it between codepoints, which still measures it
+          -- exactly, since the marks on their own take no cells, and keeps one huge
+          -- character from being measured in one piece.
+          while j < b and line:byte(j + 1) >= 0x80 and line:byte(j + 1) < 0xC0 do
+            j = j + 1
+          end
+        end
       end
       w = w + width(line:sub(i, j), col + w)
       if limit and col + w > limit + 1 then
